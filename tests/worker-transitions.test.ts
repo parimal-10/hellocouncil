@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { WorkflowEngine } from "@/modules/workflows/engine";
 import { clientCheckInDefinition, medicalRecordsFollowUpDefinition } from "@/modules/workflows/definitions";
-import { jobNames, PgBossWorkflowStepScheduler } from "@/worker/boss";
+import { configureWorkflowQueues, jobNames, PgBossWorkflowStepScheduler } from "@/worker/boss";
 import { TestWorkflowStore } from "./test-store";
 
 function storeWithRun(definitionId: "client-check-in" | "medical-records-follow-up") {
@@ -156,23 +156,37 @@ describe("worker transitions", () => {
     expect(store.events.map((event) => event.type)).toContain("step.schedule_failed");
   });
 
-  it("uses a singleton key to schedule a due step idempotently", async () => {
-    const calls: unknown[][] = [];
+  it("configures keyed strict FIFO before scheduling a due step idempotently", async () => {
+    const calls: Array<{ method: string; args: unknown[] }> = [];
     const boss = {
+      createQueue: async (...args: unknown[]) => {
+        calls.push({ method: "createQueue", args });
+      },
+      getQueue: async () => ({ policy: "key_strict_fifo" }),
       upsert: async (...args: unknown[]) => {
-        calls.push(args);
+        calls.push({ method: "upsert", args });
         return { jobs: ["job-1"], updated: 0, inserted: 1 };
       },
     };
     const scheduler = new PgBossWorkflowStepScheduler(boss as never);
     const runAt = new Date("2026-08-23T01:00:00.000Z");
 
+    await configureWorkflowQueues(boss as never);
+    await configureWorkflowQueues(boss as never);
     await scheduler.scheduleDueStep({ stepId: "step-1", runAt });
     await scheduler.scheduleDueStep({ stepId: "step-1", runAt });
 
     expect(calls).toEqual([
-      [jobNames.runDueStep, { stepId: "step-1" }, { singletonKey: "workflow.run-due-step:step-1", startAfter: runAt }],
-      [jobNames.runDueStep, { stepId: "step-1" }, { singletonKey: "workflow.run-due-step:step-1", startAfter: runAt }],
+      { method: "createQueue", args: [jobNames.runDueStep, { policy: "key_strict_fifo" }] },
+      { method: "createQueue", args: [jobNames.runDueStep, { policy: "key_strict_fifo" }] },
+      {
+        method: "upsert",
+        args: [jobNames.runDueStep, { stepId: "step-1" }, { singletonKey: "workflow.run-due-step:step-1", startAfter: runAt }],
+      },
+      {
+        method: "upsert",
+        args: [jobNames.runDueStep, { stepId: "step-1" }, { singletonKey: "workflow.run-due-step:step-1", startAfter: runAt }],
+      },
     ]);
   });
 

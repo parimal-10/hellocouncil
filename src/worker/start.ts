@@ -1,4 +1,4 @@
-import { createBoss, jobNames, PgBossWorkflowStepScheduler } from "./boss";
+import { configureWorkflowQueues, createBoss, jobNames, PgBossWorkflowStepScheduler } from "./boss";
 import { DrizzleWorkflowStore } from "@/modules/workflows/store";
 import { reconcileDueSteps } from "./reconcile-due-steps";
 import { runDueStepJob, type RunDueStepJob } from "./run-due-step";
@@ -6,6 +6,7 @@ import { runDueStepJob, type RunDueStepJob } from "./run-due-step";
 async function main() {
   const boss = createBoss();
   await boss.start();
+  await configureWorkflowQueues(boss);
   const scheduler = new PgBossWorkflowStepScheduler(boss);
   const store = new DrizzleWorkflowStore();
   const reconcile = () => reconcileDueSteps({ store, scheduler, now: new Date() });

@@ -16,6 +16,16 @@ export function createBoss() {
   });
 }
 
+export async function configureWorkflowQueues(boss: Pick<PgBoss, "createQueue" | "getQueue">): Promise<void> {
+  const policy = "key_strict_fifo";
+  await boss.createQueue(jobNames.runDueStep, { policy });
+
+  const queue = await boss.getQueue(jobNames.runDueStep);
+  if (queue?.policy !== policy) {
+    throw new Error(`${jobNames.runDueStep} queue must use ${policy}; found ${queue?.policy ?? "no queue"}.`);
+  }
+}
+
 export class PgBossWorkflowStepScheduler implements WorkflowStepScheduler {
   constructor(private readonly boss: PgBoss) {}
 
