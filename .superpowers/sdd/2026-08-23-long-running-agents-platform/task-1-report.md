@@ -67,3 +67,15 @@ Generated locally but not committed:
 1. npm reported 11 vulnerabilities in the installed dependency tree. No automatic audit fix was applied because that could change the exact requested dependency set.
 2. Next build reports that the Next ESLint plugin is not detected in the flat config, although `npm run lint` exits successfully. This should be revisited if the repository adopts a different ESLint/Next configuration convention.
 
+## Cleanup Fix Report
+
+Changed the repository cleanup tooling before review:
+
+- Added `.gitignore` entries for `node_modules/`, `.next/`, build output, TypeScript incremental output, package-manager logs, and local environment files.
+- Added `next-env.d.ts` to version control. This is the normal Next.js convention: it is a small generated TypeScript reference file required by the framework, while `.next/` remains ignored build output.
+
+Verification:
+
+- `npm.cmd run lint`: PASS, no lint errors.
+- `npm.cmd run build`: PASS, production build completed. The existing non-failing Next ESLint plugin detection warning remains.
+
