@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { WorkflowEngine } from "@/modules/workflows/engine";
 import { clientCheckInDefinition, medicalRecordsFollowUpDefinition } from "@/modules/workflows/definitions";
+import { jobNames, PgBossWorkflowStepScheduler } from "@/worker/boss";
 import { TestWorkflowStore } from "./test-store";
 
 function storeWithRun(definitionId: "client-check-in" | "medical-records-follow-up") {
@@ -140,7 +141,7 @@ describe("worker transitions", () => {
     expect(store.steps.get("step-1")?.status).toBe("completed");
   });
 
-  it("marks the run and created step failed when scheduler returns no job id", async () => {
+  it("leaves the run active and created step due when scheduler returns no job id", async () => {
     const store = storeWithRun("client-check-in");
     const engine = new WorkflowEngine({
       store,
@@ -150,14 +151,35 @@ describe("worker transitions", () => {
 
     await engine.advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z"));
 
-    expect(store.runs.get("run-1")?.status).toBe("failed");
-    expect(store.steps.get("step-2")?.status).toBe("failed");
+    expect(store.runs.get("run-1")?.status).toBe("active");
+    expect(store.steps.get("step-2")?.status).toBe("due");
     expect(store.events.map((event) => event.type)).toContain("step.schedule_failed");
   });
 
-  it("reconciles due steps that have no queued job", async () => {
+  it("uses a singleton key to schedule a due step idempotently", async () => {
+    const calls: unknown[][] = [];
+    const boss = {
+      upsert: async (...args: unknown[]) => {
+        calls.push(args);
+        return { jobs: ["job-1"], updated: 0, inserted: 1 };
+      },
+    };
+    const scheduler = new PgBossWorkflowStepScheduler(boss as never);
+    const runAt = new Date("2026-08-23T01:00:00.000Z");
+
+    await scheduler.scheduleDueStep({ stepId: "step-1", runAt });
+    await scheduler.scheduleDueStep({ stepId: "step-1", runAt });
+
+    expect(calls).toEqual([
+      [jobNames.runDueStep, { stepId: "step-1" }, { singletonKey: "workflow.run-due-step:step-1", startAfter: runAt }],
+      [jobNames.runDueStep, { stepId: "step-1" }, { singletonKey: "workflow.run-due-step:step-1", startAfter: runAt }],
+    ]);
+  });
+
+  it("reconciles due steps without duplicating an idempotently scheduled job", async () => {
     const store = storeWithRun("client-check-in");
     const scheduledJobs: Array<{ stepId: string; runAt: Date }> = [];
+    const jobIds = new Map<string, string>();
     const now = new Date("2026-08-23T01:00:00.000Z");
     const { reconcileDueSteps } = await import("@/worker/reconcile-due-steps");
 
@@ -165,9 +187,20 @@ describe("worker transitions", () => {
       store,
       scheduler: {
         scheduleDueStep: async (job) => {
+          const existingJobId = jobIds.get(job.stepId);
+          if (existingJobId) return existingJobId;
+          const jobId = `job-${jobIds.size + 1}`;
+          jobIds.set(job.stepId, jobId);
           scheduledJobs.push(job);
-          return "job-1";
+          return jobId;
         },
+      },
+      now,
+    });
+    await reconcileDueSteps({
+      store,
+      scheduler: {
+        scheduleDueStep: async (job) => jobIds.get(job.stepId) ?? "missing-job",
       },
       now,
     });

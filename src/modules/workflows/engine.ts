@@ -156,9 +156,7 @@ export class WorkflowEngine {
 
   private async markScheduleFailed(workflowRunId: string, workflowStepId: string, error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown scheduler error.";
-    const summary = "Workflow step could not be scheduled.";
-    await this.input.store.updateStepStatus(workflowStepId, "failed");
-    await this.input.store.updateRunStatus(workflowRunId, "failed", summary);
+    const summary = "Workflow step scheduling will be retried.";
     await this.input.store.appendEvent({
       workflowRunId,
       type: "step.schedule_failed",
