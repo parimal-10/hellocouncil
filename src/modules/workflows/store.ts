@@ -3,6 +3,7 @@ import { db, type DbClient } from "@/db/client";
 import {
   contactAttempts,
   humanReviewRequests,
+  people,
   workflowEvents,
   workflowRuns,
   workflowSteps,
@@ -58,6 +59,7 @@ export type WorkflowStore = {
   getDueSteps(now: Date): Promise<WorkflowStepRecord[]>;
   getStep(id: string): Promise<WorkflowStepRecord>;
   getReview(id: string): Promise<ReviewRequestRecord>;
+  isAssignableFirmUser(id: string): Promise<boolean>;
   claimDueStep(id: string, now: Date): Promise<WorkflowStepRecord | null>;
   claimDueStepForScheduling(id: string, now: Date, claimUntil: Date): Promise<boolean>;
   markDueStepScheduled(id: string, scheduledAt: Date): Promise<void>;
@@ -113,6 +115,14 @@ export class DrizzleWorkflowStore implements WorkflowStore {
     const [review] = await this.client.select().from(humanReviewRequests).where(eq(humanReviewRequests.id, id));
     if (!review) throw new Error(`Review not found: ${id}`);
     return review as ReviewRequestRecord;
+  }
+
+  async isAssignableFirmUser(id: string): Promise<boolean> {
+    const [person] = await this.client
+      .select({ id: people.id })
+      .from(people)
+      .where(and(eq(people.id, id), eq(people.role, "firm_user")));
+    return Boolean(person);
   }
 
   async claimDueStep(id: string, now: Date): Promise<WorkflowStepRecord | null> {

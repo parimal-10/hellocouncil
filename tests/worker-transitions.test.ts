@@ -418,4 +418,39 @@ describe("worker transitions", () => {
     expect(store.steps.get("step-1")?.status).toBe("due");
     expect(store.runs.get("run-1")?.status).toBe("active");
   });
+
+  it("rejects a non-firm user as a review owner without changing the review", async () => {
+    const store = storeWithRun("medical-records-follow-up");
+    store.people.set("client-1", { id: "client-1", role: "client" });
+    store.reviews.push({
+      id: "review-1",
+      status: "open",
+      workflowRunId: "run-1",
+      workflowStepId: "step-1",
+      decision: {
+        kind: "block",
+        reason: "provider_refusal",
+        severity: "high",
+        recommendedAction: "Call provider.",
+        summary: "Provider refused.",
+      },
+    });
+    const engine = new WorkflowEngine({
+      store,
+      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
+    });
+
+    await expect(
+      engine.applyAction({
+        type: "resolve_blocked_step",
+        reviewRequestId: "review-1",
+        resolution: "assigned",
+        assignedUserId: "client-1",
+        note: "Assigning for follow-up.",
+      }),
+    ).rejects.toThrow("must be a firm user");
+
+    expect(store.reviews[0]?.status).toBe("open");
+    expect(store.events.map((event) => event.type)).not.toContain("review.assigned");
+  });
 });

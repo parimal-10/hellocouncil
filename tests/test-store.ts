@@ -11,6 +11,7 @@ import type { WorkflowAction, WorkflowRunStatus, WorkflowStepStatus } from "@/mo
 export class TestWorkflowStore implements WorkflowStore {
   runs = new Map<string, WorkflowRunRecord>();
   steps = new Map<string, WorkflowStepRecord>();
+  people = new Map<string, { id: string; role: string }>();
   events: AppendWorkflowEventInput[] = [];
   reviews: Array<CreateReviewInput & { id: string; status: string; note?: string }> = [];
   contactAttempts: Array<Record<string, unknown>> = [];
@@ -47,6 +48,10 @@ export class TestWorkflowStore implements WorkflowStore {
       status: review.status as ReviewRequestRecord["status"],
       assignedUserId: null,
     };
+  }
+
+  async isAssignableFirmUser(id: string) {
+    return this.people.get(id)?.role === "firm_user";
   }
 
   async claimDueStep(id: string, now: Date) {

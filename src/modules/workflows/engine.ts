@@ -119,6 +119,13 @@ export class WorkflowEngine {
 
       if (action.resolution === "assigned") {
         if (!action.assignedUserId) throw new Error("An assigned user is required when assigning a review.");
+      }
+
+      if (action.assignedUserId && !(await this.input.store.isAssignableFirmUser(action.assignedUserId))) {
+        throw new Error(`Assigned user ${action.assignedUserId} must be a firm user.`);
+      }
+
+      if (action.resolution === "assigned") {
         await this.input.store.resolveReview({
           reviewRequestId: review.id,
           status: "assigned",
