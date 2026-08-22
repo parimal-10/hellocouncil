@@ -1,0 +1,30 @@
+﻿Assignment: Platform for Long-Running Agents
+Context
+HelloCounsel builds AI agents for plaintiff law firms. Many workflows in a firm do not finish in a single interaction. They require repeated follow-up, updates over time, adaptation to new information, and, occasionally, intervention from a human teammate. We want to understand how you would think about the product and platform needed to support these kinds of long-running agent workflows.
+The task
+Design and build a working slice of a platform that can power long-running agents across multiple use cases.
+For this exercise, anchor your thinking around two example workflows:
+1. Medical records follow-up
+A firm should be able to assign an agent to follow up with medical providers, gather status updates, and bring those updates back to the firm.
+
+2. Client check-in
+A firm should be able to involve an agent to periodically check in with a client, understand how they are doing, and report meaningful updates back to the firm.
+The platform should support these workflows without being narrowly built for just these two. During the discussion, we will ask how another use case could be added on top of what you built.
+In some situations, the agent may get blocked, need review, or require a person to step in. Your design should support a human-in-the-loop path where appropriate.
+Deliverable
+   * A working slice of the platform
+   * A short note or Loom explaining:
+   * the design you chose and why
+   * what product/platform primitives you introduced
+   * what you implemented vs. stubbed
+   * where the system breaks down today
+   * how a new use case would fit into the platform
+   * what you would build next with more time
+How we’ll evaluate it
+We care most about:
+   * judgment under ambiguity
+   * quality of abstraction
+   * extensibility of the platform
+   * product thinking
+   * ability to make practical tradeoffs
+We are not looking for a polished one-off workflow. We are looking for signs that you can identify and build the right underlying primitives for a reusable agent platform.
