@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { WorkflowEngine } from "@/modules/workflows/engine";
 import { clientCheckInDefinition, medicalRecordsFollowUpDefinition } from "@/modules/workflows/definitions";
+import type { WorkflowAction } from "@/modules/workflows/types";
 import { configureWorkflowQueues, jobNames, PgBossWorkflowStepScheduler } from "@/worker/boss";
 import { reconcileDueSteps } from "@/worker/reconcile-due-steps";
 import { TestWorkflowStore } from "./test-store";
@@ -341,6 +342,14 @@ describe("worker transitions", () => {
 
   it("resolves a blocked step through a controlled review action", async () => {
     const store = storeWithRun("medical-records-follow-up");
+    store.runs.set("run-2", {
+      id: "run-2",
+      definitionId: "client-check-in",
+      caseId: "case-2",
+      status: "waiting_for_human",
+      title: "Unrelated run",
+      summary: "",
+    });
     store.reviews.push({
       id: "review-1",
       status: "open",
@@ -360,15 +369,53 @@ describe("worker transitions", () => {
       syntheticResponses: {},
     });
 
-    await engine.applyAction({
+    const tamperedAction = {
       type: "resolve_blocked_step",
-      workflowRunId: "run-1",
+      workflowRunId: "run-2",
       reviewRequestId: "review-1",
       resolution: "resolved",
       note: "Authorization verified.",
-    });
+    } as unknown as WorkflowAction;
+
+    await engine.applyAction(tamperedAction);
 
     expect(store.reviews[0]?.status).toBe("resolved");
-    expect(store.events.map((event) => event.type)).toContain("review.resolved");
+    expect(store.steps.get("step-1")?.status).toBe("due");
+    expect(store.runs.get("run-1")?.status).toBe("active");
+    expect(store.runs.get("run-2")?.status).toBe("waiting_for_human");
+    expect(store.events).toContainEqual(expect.objectContaining({ workflowRunId: "run-1", type: "review.resolved" }));
+  });
+
+  it("rejects actions for reviews that are no longer reviewable", async () => {
+    const store = storeWithRun("medical-records-follow-up");
+    store.reviews.push({
+      id: "review-1",
+      status: "resolved",
+      workflowRunId: "run-1",
+      workflowStepId: "step-1",
+      decision: {
+        kind: "block",
+        reason: "provider_refusal",
+        severity: "high",
+        recommendedAction: "Call provider.",
+        summary: "Provider refused.",
+      },
+    });
+    const engine = new WorkflowEngine({
+      store,
+      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
+    });
+
+    await expect(
+      engine.applyAction({
+        type: "resolve_blocked_step",
+        reviewRequestId: "review-1",
+        resolution: "resolved",
+        note: "Authorization verified.",
+      }),
+    ).rejects.toThrow("not open or assigned");
+
+    expect(store.steps.get("step-1")?.status).toBe("due");
+    expect(store.runs.get("run-1")?.status).toBe("active");
   });
 });

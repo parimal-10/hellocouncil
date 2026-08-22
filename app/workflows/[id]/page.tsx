@@ -14,8 +14,11 @@ export default async function WorkflowDetailPage({ params }: { params: Promise<{
       <div>
         <h1 className="text-2xl font-semibold">{detail.run.title}</h1>
         <p className="text-sm text-muted">
-          {detail.caseRecord?.matterName ?? "Unknown case"} - {detail.run.status}
+          {detail.context
+            ? `${detail.context.matterName} | Client: ${detail.context.clientName}${detail.context.providerName ? ` | Provider: ${detail.context.providerName}` : ""} | Owner: ${detail.context.assignedUserName}`
+            : detail.caseRecord?.matterName ?? "Unknown case"}
         </p>
+        <p className="mt-1 text-sm text-muted">{detail.run.status}</p>
       </div>
 
       <section className="grid gap-4 lg:grid-cols-2">

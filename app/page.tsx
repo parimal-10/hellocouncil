@@ -34,6 +34,7 @@ export default async function DashboardPage() {
                     <div className="min-w-0">
                       <p className="font-medium">{run.title}</p>
                       <p className="truncate text-sm text-muted">{run.summary}</p>
+                      <p className="mt-1 text-xs text-muted">{contextSummary(run.context)}</p>
                     </div>
                     <Status status={run.status} />
                   </div>
@@ -52,12 +53,36 @@ export default async function DashboardPage() {
                 <div key={review.id} className="py-3">
                   <p className="font-medium">{review.reason}</p>
                   <p className="text-sm text-muted">{review.summary}</p>
+                  <p className="mt-1 text-xs text-muted">
+                    {review.runTitle} - {contextSummary(review.context)}
+                  </p>
                 </div>
               ))}
             </div>
           )}
         </Panel>
       </section>
+
+      <Panel title="Due follow-ups" icon={<CalendarClock size={18} />}>
+        {data.dueSteps.length === 0 ? (
+          <EmptyState>No follow-ups are currently due.</EmptyState>
+        ) : (
+          <div className="divide-y divide-line">
+            {data.dueSteps.map((step) => (
+              <Link key={step.id} href={`/workflows/${step.workflowRunId}`} className="block py-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="font-medium">{step.label}</p>
+                    <p className="text-sm text-muted">{step.runTitle}</p>
+                    <p className="mt-1 text-xs text-muted">{contextSummary(step.context)}</p>
+                  </div>
+                  <span className="shrink-0 text-xs text-muted">{step.dueAt.toLocaleString()}</span>
+                </div>
+              </Link>
+            ))}
+          </div>
+        )}
+      </Panel>
 
       <Panel title="Recent audit events" icon={<History size={18} />}>
         {data.events.length === 0 ? (
@@ -107,4 +132,11 @@ function EmptyState({ children }: { children: ReactNode }) {
 
 function Status({ status }: { status: string }) {
   return <span className="shrink-0 rounded border border-line px-2 py-1 text-xs text-muted">{status}</span>;
+}
+
+function contextSummary(context: { matterName: string; clientName: string; providerName?: string; assignedUserName: string } | undefined) {
+  if (!context) return "Case context unavailable";
+  return [context.matterName, `Client: ${context.clientName}`, context.providerName && `Provider: ${context.providerName}`, `Owner: ${context.assignedUserName}`]
+    .filter(Boolean)
+    .join(" | ");
 }

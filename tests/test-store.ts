@@ -1,6 +1,7 @@
 import type {
   AppendWorkflowEventInput,
   CreateReviewInput,
+  ReviewRequestRecord,
   WorkflowRunRecord,
   WorkflowStepRecord,
   WorkflowStore,
@@ -34,6 +35,18 @@ export class TestWorkflowStore implements WorkflowStore {
     const step = this.steps.get(id);
     if (!step) throw new Error(`Workflow step not found: ${id}`);
     return step;
+  }
+
+  async getReview(id: string): Promise<ReviewRequestRecord> {
+    const review = this.reviews.find((item) => item.id === id);
+    if (!review) throw new Error(`Review not found: ${id}`);
+    return {
+      id: review.id,
+      workflowRunId: review.workflowRunId,
+      workflowStepId: review.workflowStepId ?? null,
+      status: review.status as ReviewRequestRecord["status"],
+      assignedUserId: null,
+    };
   }
 
   async claimDueStep(id: string, now: Date) {
@@ -93,6 +106,17 @@ export class TestWorkflowStore implements WorkflowStore {
     this.steps.set(id, { ...step, status, attemptCount: attemptCount ?? step.attemptCount });
   }
 
+  async rescheduleStep(id: string, dueAt: Date) {
+    const step = await this.getStep(id);
+    this.steps.set(id, {
+      ...step,
+      status: "due",
+      dueAt,
+      queueJobScheduledAt: null,
+      queueSchedulingClaimUntil: null,
+    });
+  }
+
   async createStep(input: { workflowRunId: string; stepType: string; label: string; dueAt: Date; payload?: Record<string, unknown> }) {
     const step: WorkflowStepRecord = {
       id: `step-${this.steps.size + 1}`,
@@ -120,9 +144,17 @@ export class TestWorkflowStore implements WorkflowStore {
     return id;
   }
 
-  async resolveReview(input: { reviewRequestId: string; status: "approved" | "edited" | "rejected" | "resolved"; note: string }) {
+  async resolveReview(input: {
+    reviewRequestId: string;
+    status: "approved" | "edited" | "rejected" | "resolved" | "assigned";
+    note: string;
+    assignedUserId?: string;
+  }) {
     const review = this.reviews.find((item) => item.id === input.reviewRequestId);
     if (!review) throw new Error(`Review not found: ${input.reviewRequestId}`);
+    if (review.status !== "open" && review.status !== "assigned") {
+      throw new Error(`Review ${input.reviewRequestId} is not open or assigned.`);
+    }
     review.status = input.status;
     review.note = input.note;
   }
@@ -132,6 +164,9 @@ export class TestWorkflowStore implements WorkflowStore {
   }
 
   async applyAction(action: WorkflowAction) {
+    if (action.type === "resolve_blocked_step") {
+      throw new Error("Review resolution must be handled by the workflow engine.");
+    }
     await this.appendEvent({
       workflowRunId: action.workflowRunId,
       type: `action.${action.type}`,

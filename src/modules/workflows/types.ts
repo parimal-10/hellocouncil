@@ -99,8 +99,8 @@ export type WorkflowAction =
     }
   | {
       type: "resolve_blocked_step";
-      workflowRunId: string;
       reviewRequestId: string;
-      resolution: "approved" | "edited" | "rejected" | "resolved";
+      resolution: "approved" | "edited" | "rejected" | "resolved" | "assigned";
       note: string;
+      assignedUserId?: string;
     };

@@ -3,10 +3,10 @@
 import { revalidatePath } from "next/cache";
 
 export async function resolveReviewAction(formData: FormData) {
-  const workflowRunId = String(formData.get("workflowRunId"));
-  const reviewRequestId = String(formData.get("reviewRequestId"));
-  const resolution = String(formData.get("resolution")) as "approved" | "edited" | "rejected" | "resolved";
+  const reviewRequestId = requiredFormValue(formData, "reviewRequestId");
+  const resolution = reviewResolution(formData.get("resolution"));
   const note = String(formData.get("note") || "Reviewed by firm user.");
+  const assignedUserId = optionalFormValue(formData, "assignedUserId");
   const [definitions, { WorkflowEngine }, { DrizzleWorkflowStore }] = await Promise.all([
     import("@/modules/workflows/definitions"),
     import("@/modules/workflows/engine"),
@@ -20,13 +20,31 @@ export async function resolveReviewAction(formData: FormData) {
 
   await engine.applyAction({
     type: "resolve_blocked_step",
-    workflowRunId,
     reviewRequestId,
     resolution,
     note,
+    assignedUserId,
   });
 
   revalidatePath("/");
   revalidatePath("/review");
-  revalidatePath(`/workflows/${workflowRunId}`);
+  revalidatePath("/workflows/[id]", "page");
+}
+
+function requiredFormValue(formData: FormData, name: string) {
+  const value = optionalFormValue(formData, name);
+  if (!value) throw new Error(`${name} is required.`);
+  return value;
+}
+
+function optionalFormValue(formData: FormData, name: string) {
+  const value = formData.get(name);
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function reviewResolution(value: FormDataEntryValue | null) {
+  if (value === "approved" || value === "edited" || value === "rejected" || value === "resolved" || value === "assigned") {
+    return value;
+  }
+  throw new Error("Invalid review resolution.");
 }

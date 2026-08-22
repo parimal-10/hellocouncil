@@ -112,14 +112,40 @@ export class WorkflowEngine {
 
   async applyAction(action: WorkflowAction): Promise<{ ok: boolean; message: string }> {
     if (action.type === "resolve_blocked_step") {
+      const review = await this.input.store.getReview(action.reviewRequestId);
+      if (review.status !== "open" && review.status !== "assigned") {
+        throw new Error(`Review ${action.reviewRequestId} is not open or assigned.`);
+      }
+
+      if (action.resolution === "assigned") {
+        if (!action.assignedUserId) throw new Error("An assigned user is required when assigning a review.");
+        await this.input.store.resolveReview({
+          reviewRequestId: review.id,
+          status: "assigned",
+          note: action.note,
+          assignedUserId: action.assignedUserId,
+        });
+        await this.input.store.appendEvent({
+          workflowRunId: review.workflowRunId,
+          type: "review.assigned",
+          summary: action.note,
+          actorType: "reviewer",
+          payload: action,
+        });
+        return { ok: true, message: "Review assigned." };
+      }
+
+      if (!review.workflowStepId) throw new Error(`Review ${action.reviewRequestId} is not associated with a workflow step.`);
       await this.input.store.resolveReview({
-        reviewRequestId: action.reviewRequestId,
+        reviewRequestId: review.id,
         status: action.resolution,
         note: action.note,
+        assignedUserId: action.assignedUserId,
       });
-      await this.input.store.updateRunStatus(action.workflowRunId, "active", action.note);
+      await this.input.store.rescheduleStep(review.workflowStepId, new Date());
+      await this.input.store.updateRunStatus(review.workflowRunId, "active", action.note);
       await this.input.store.appendEvent({
-        workflowRunId: action.workflowRunId,
+        workflowRunId: review.workflowRunId,
         type: "review.resolved",
         summary: action.note,
         actorType: "reviewer",
