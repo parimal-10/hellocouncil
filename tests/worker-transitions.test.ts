@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { WorkflowEngine } from "@/modules/workflows/engine";
 import { clientCheckInDefinition, medicalRecordsFollowUpDefinition } from "@/modules/workflows/definitions";
 import { configureWorkflowQueues, jobNames, PgBossWorkflowStepScheduler } from "@/worker/boss";
+import { reconcileDueSteps } from "@/worker/reconcile-due-steps";
 import { TestWorkflowStore } from "./test-store";
 
 function storeWithRun(definitionId: "client-check-in" | "medical-records-follow-up") {
@@ -156,70 +157,144 @@ describe("worker transitions", () => {
     expect(store.events.map((event) => event.type)).toContain("step.schedule_failed");
   });
 
-  it("configures keyed strict FIFO before scheduling a due step idempotently", async () => {
-    const calls: Array<{ method: string; args: unknown[] }> = [];
+  it("does not reject an existing standard due-step queue", async () => {
+    const calls: unknown[][] = [];
     const boss = {
       createQueue: async (...args: unknown[]) => {
-        calls.push({ method: "createQueue", args });
+        calls.push(args);
       },
-      getQueue: async () => ({ policy: "key_strict_fifo" }),
-      upsert: async (...args: unknown[]) => {
-        calls.push({ method: "upsert", args });
-        return { jobs: ["job-1"], updated: 0, inserted: 1 };
+      getQueue: async () => ({ policy: "standard" }),
+    };
+
+    await expect(configureWorkflowQueues(boss as never)).resolves.toBeUndefined();
+    expect(calls).toEqual([[jobNames.runDueStep, { policy: "key_strict_fifo" }]]);
+  });
+
+  it("uses the workflow step id as the deterministic pg-boss job id", async () => {
+    const calls: Array<{ method: string; args: unknown[] }> = [];
+    const boss = {
+      send: async (...args: unknown[]) => {
+        calls.push({ method: "send", args });
+        return calls.length === 1 ? "step-1" : null;
       },
     };
     const scheduler = new PgBossWorkflowStepScheduler(boss as never);
     const runAt = new Date("2026-08-23T01:00:00.000Z");
 
-    await configureWorkflowQueues(boss as never);
-    await configureWorkflowQueues(boss as never);
-    await scheduler.scheduleDueStep({ stepId: "step-1", runAt });
-    await scheduler.scheduleDueStep({ stepId: "step-1", runAt });
+    await expect(scheduler.scheduleDueStep({ stepId: "step-1", runAt })).resolves.toBe("step-1");
+    await expect(scheduler.scheduleDueStep({ stepId: "step-1", runAt })).resolves.toBe("step-1");
 
     expect(calls).toEqual([
-      { method: "createQueue", args: [jobNames.runDueStep, { policy: "key_strict_fifo" }] },
-      { method: "createQueue", args: [jobNames.runDueStep, { policy: "key_strict_fifo" }] },
       {
-        method: "upsert",
-        args: [jobNames.runDueStep, { stepId: "step-1" }, { singletonKey: "workflow.run-due-step:step-1", startAfter: runAt }],
+        method: "send",
+        args: [
+          jobNames.runDueStep,
+          { stepId: "step-1" },
+          { id: "step-1", singletonKey: "workflow.run-due-step:step-1", startAfter: runAt },
+        ],
       },
       {
-        method: "upsert",
-        args: [jobNames.runDueStep, { stepId: "step-1" }, { singletonKey: "workflow.run-due-step:step-1", startAfter: runAt }],
+        method: "send",
+        args: [
+          jobNames.runDueStep,
+          { stepId: "step-1" },
+          { id: "step-1", singletonKey: "workflow.run-due-step:step-1", startAfter: runAt },
+        ],
       },
     ]);
   });
 
-  it("reconciles due steps without duplicating an idempotently scheduled job", async () => {
+  it("claims a due step once across concurrent reconciliation", async () => {
     const store = storeWithRun("client-check-in");
     const scheduledJobs: Array<{ stepId: string; runAt: Date }> = [];
-    const jobIds = new Map<string, string>();
     const now = new Date("2026-08-23T01:00:00.000Z");
-    const { reconcileDueSteps } = await import("@/worker/reconcile-due-steps");
-
-    await reconcileDueSteps({
+    const input = {
       store,
       scheduler: {
-        scheduleDueStep: async (job) => {
-          const existingJobId = jobIds.get(job.stepId);
-          if (existingJobId) return existingJobId;
-          const jobId = `job-${jobIds.size + 1}`;
-          jobIds.set(job.stepId, jobId);
+        scheduleDueStep: async (job: { stepId: string; runAt: Date }) => {
           scheduledJobs.push(job);
-          return jobId;
+          return "job-1";
         },
       },
       now,
-    });
-    await reconcileDueSteps({
-      store,
-      scheduler: {
-        scheduleDueStep: async (job) => jobIds.get(job.stepId) ?? "missing-job",
-      },
-      now,
-    });
+    };
+
+    await Promise.all([reconcileDueSteps(input), reconcileDueSteps(input)]);
+    await reconcileDueSteps({ ...input, now: new Date("2026-08-23T01:06:00.000Z") });
 
     expect(scheduledJobs).toEqual([{ stepId: "step-1", runAt: now }]);
+  });
+
+  it("releases a failed scheduling claim so reconciliation can retry", async () => {
+    const store = storeWithRun("client-check-in");
+    const now = new Date("2026-08-23T01:00:00.000Z");
+    let callCount = 0;
+    let rejectFirstCall!: (error: Error) => void;
+    let markFirstCallStarted!: () => void;
+    const firstCallStarted = new Promise<void>((resolve) => {
+      markFirstCallStarted = resolve;
+    });
+    const firstCallFailure = new Promise<never>((_resolve, reject) => {
+      rejectFirstCall = reject;
+    });
+    const input = {
+      store,
+      scheduler: {
+        scheduleDueStep: async () => {
+          callCount += 1;
+          if (callCount === 1) {
+            markFirstCallStarted();
+            return firstCallFailure;
+          }
+          return "job-1";
+        },
+      },
+      now,
+    };
+
+    const firstReconciliation = reconcileDueSteps(input);
+    await firstCallStarted;
+    const concurrentResult = await reconcileDueSteps(input);
+    rejectFirstCall(new Error("queue unavailable"));
+    await expect(firstReconciliation).rejects.toThrow("queue unavailable");
+    const retryResult = await reconcileDueSteps(input);
+
+    expect(concurrentResult).toBe(0);
+    expect(retryResult).toBe(1);
+    expect(callCount).toBe(2);
+  });
+
+  it("retries reconciliation after a crashed scheduler claim expires", async () => {
+    const store = storeWithRun("client-check-in");
+    store.steps.set("step-1", {
+      ...store.steps.get("step-1")!,
+      queueSchedulingClaimUntil: new Date("2026-08-23T01:05:00.000Z"),
+    });
+    const scheduledJobs: Array<{ stepId: string; runAt: Date }> = [];
+    const scheduler = {
+      scheduleDueStep: async (job: { stepId: string; runAt: Date }) => {
+        scheduledJobs.push(job);
+        return "job-1";
+      },
+    };
+
+    expect(
+      await reconcileDueSteps({
+        store,
+        scheduler,
+        now: new Date("2026-08-23T01:00:00.000Z"),
+      }),
+    ).toBe(0);
+    expect(
+      await reconcileDueSteps({
+        store,
+        scheduler,
+        now: new Date("2026-08-23T01:06:00.000Z"),
+      }),
+    ).toBe(1);
+    expect(scheduledJobs).toEqual([
+      { stepId: "step-1", runAt: new Date("2026-08-23T01:06:00.000Z") },
+    ]);
   });
 
   it("blocks after the third failed contact", async () => {

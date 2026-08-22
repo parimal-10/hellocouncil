@@ -87,6 +87,7 @@ export class WorkflowEngine {
       try {
         const jobId = await this.input.scheduler?.scheduleDueStep({ stepId: scheduledStep.id, runAt: dueAt });
         if (!jobId) throw new Error("Due-step scheduler did not return a job id.");
+        await this.input.store.markDueStepScheduled(scheduledStep.id, now);
       } catch (error) {
         await this.markScheduleFailed(run.id, scheduledStep.id, error);
         return;

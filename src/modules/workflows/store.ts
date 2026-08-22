@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lte, or, sql } from "drizzle-orm";
 import { db, type DbClient } from "@/db/client";
 import {
   contactAttempts,
@@ -27,6 +27,8 @@ export type WorkflowStepRecord = {
   dueAt: Date;
   attemptCount: number;
   payload: unknown;
+  queueJobScheduledAt?: Date | null;
+  queueSchedulingClaimUntil?: Date | null;
 };
 
 export type AppendWorkflowEventInput = {
@@ -48,6 +50,9 @@ export type WorkflowStore = {
   getDueSteps(now: Date): Promise<WorkflowStepRecord[]>;
   getStep(id: string): Promise<WorkflowStepRecord>;
   claimDueStep(id: string, now: Date): Promise<WorkflowStepRecord | null>;
+  claimDueStepForScheduling(id: string, now: Date, claimUntil: Date): Promise<boolean>;
+  markDueStepScheduled(id: string, scheduledAt: Date): Promise<void>;
+  releaseDueStepSchedulingClaim(id: string, claimUntil: Date): Promise<void>;
   updateRunStatus(id: string, status: WorkflowRunStatus, summary?: string): Promise<void>;
   updateStepStatus(id: string, status: WorkflowStepStatus, attemptCount?: number): Promise<void>;
   createStep(input: { workflowRunId: string; stepType: string; label: string; dueAt: Date; payload?: Record<string, unknown> }): Promise<WorkflowStepRecord>;
@@ -71,7 +76,14 @@ export class DrizzleWorkflowStore implements WorkflowStore {
     const rows = await this.client
       .select()
       .from(workflowSteps)
-      .where(and(eq(workflowSteps.status, "due"), lte(workflowSteps.dueAt, now)))
+      .where(
+        and(
+          eq(workflowSteps.status, "due"),
+          lte(workflowSteps.dueAt, now),
+          isNull(workflowSteps.queueJobScheduledAt),
+          or(isNull(workflowSteps.queueSchedulingClaimUntil), lte(workflowSteps.queueSchedulingClaimUntil, now)),
+        ),
+      )
       .orderBy(asc(workflowSteps.dueAt));
     return rows as WorkflowStepRecord[];
   }
@@ -93,6 +105,48 @@ export class DrizzleWorkflowStore implements WorkflowStore {
       .where(and(eq(workflowSteps.id, id), eq(workflowSteps.status, "due"), lte(workflowSteps.dueAt, now)))
       .returning();
     return (step as WorkflowStepRecord | undefined) ?? null;
+  }
+
+  async claimDueStepForScheduling(id: string, now: Date, claimUntil: Date): Promise<boolean> {
+    const [step] = await this.client
+      .update(workflowSteps)
+      .set({ queueSchedulingClaimUntil: claimUntil, updatedAt: new Date() })
+      .where(
+        and(
+          eq(workflowSteps.id, id),
+          eq(workflowSteps.status, "due"),
+          lte(workflowSteps.dueAt, now),
+          isNull(workflowSteps.queueJobScheduledAt),
+          or(isNull(workflowSteps.queueSchedulingClaimUntil), lte(workflowSteps.queueSchedulingClaimUntil, now)),
+        ),
+      )
+      .returning({ id: workflowSteps.id });
+    return Boolean(step);
+  }
+
+  async markDueStepScheduled(id: string, scheduledAt: Date): Promise<void> {
+    await this.client
+      .update(workflowSteps)
+      .set({
+        queueJobScheduledAt: scheduledAt,
+        queueSchedulingClaimUntil: null,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(workflowSteps.id, id), eq(workflowSteps.status, "due")));
+  }
+
+  async releaseDueStepSchedulingClaim(id: string, claimUntil: Date): Promise<void> {
+    await this.client
+      .update(workflowSteps)
+      .set({ queueSchedulingClaimUntil: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(workflowSteps.id, id),
+          eq(workflowSteps.status, "due"),
+          isNull(workflowSteps.queueJobScheduledAt),
+          eq(workflowSteps.queueSchedulingClaimUntil, claimUntil),
+        ),
+      );
   }
 
   async updateRunStatus(id: string, status: WorkflowRunStatus, summary?: string): Promise<void> {

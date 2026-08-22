@@ -1,0 +1,2 @@
+ALTER TABLE "workflow_steps" ADD COLUMN "queue_job_scheduled_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "workflow_steps" ADD COLUMN "queue_scheduling_claim_until" timestamp with time zone;

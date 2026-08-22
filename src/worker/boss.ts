@@ -16,24 +16,20 @@ export function createBoss() {
   });
 }
 
-export async function configureWorkflowQueues(boss: Pick<PgBoss, "createQueue" | "getQueue">): Promise<void> {
-  const policy = "key_strict_fifo";
-  await boss.createQueue(jobNames.runDueStep, { policy });
-
-  const queue = await boss.getQueue(jobNames.runDueStep);
-  if (queue?.policy !== policy) {
-    throw new Error(`${jobNames.runDueStep} queue must use ${policy}; found ${queue?.policy ?? "no queue"}.`);
-  }
+export async function configureWorkflowQueues(boss: Pick<PgBoss, "createQueue">): Promise<void> {
+  await boss.createQueue(jobNames.runDueStep, { policy: "key_strict_fifo" });
 }
 
 export class PgBossWorkflowStepScheduler implements WorkflowStepScheduler {
-  constructor(private readonly boss: PgBoss) {}
+  constructor(private readonly boss: Pick<PgBoss, "send">) {}
 
   async scheduleDueStep(input: { stepId: string; runAt: Date }): Promise<string> {
     const singletonKey = `${jobNames.runDueStep}:${input.stepId}`;
-    const { jobs } = await this.boss.upsert(jobNames.runDueStep, { stepId: input.stepId }, { singletonKey, startAfter: input.runAt });
-    const [jobId] = jobs;
-    if (!jobId) throw new Error("pg-boss did not create a due-step job.");
-    return jobId;
+    const jobId = await this.boss.send(
+      jobNames.runDueStep,
+      { stepId: input.stepId },
+      { id: input.stepId, singletonKey, startAfter: input.runAt },
+    );
+    return jobId ?? input.stepId;
   }
 }

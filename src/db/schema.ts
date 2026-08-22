@@ -55,6 +55,8 @@ export const workflowSteps = pgTable(
     dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
     attemptCount: integer("attempt_count").notNull().default(0),
     payload: jsonb("payload").notNull().default({}),
+    queueJobScheduledAt: timestamp("queue_job_scheduled_at", { withTimezone: true }),
+    queueSchedulingClaimUntil: timestamp("queue_scheduling_claim_until", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
