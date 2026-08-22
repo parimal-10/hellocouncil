@@ -5,9 +5,7 @@ import { routeWorkflowAction } from "@/modules/workflows/action-router";
 import { SimulatedVoiceSessionAdapter } from "@/modules/voice/simulated-adapter";
 
 export async function runSimulatedVoiceSessionAction(formData: FormData) {
-  const caseId = String(formData.get("caseId"));
   const workflowRunId = String(formData.get("workflowRunId"));
-  const definitionId = String(formData.get("definitionId")) as "medical-records-follow-up" | "client-check-in";
   const [definitions, { WorkflowEngine }, { DrizzleWorkflowStore }] = await Promise.all([
     import("@/modules/workflows/definitions"),
     import("@/modules/workflows/engine"),
@@ -15,13 +13,15 @@ export async function runSimulatedVoiceSessionAction(formData: FormData) {
   ]);
 
   const adapter = new SimulatedVoiceSessionAdapter();
+  const store = new DrizzleWorkflowStore();
+  const run = await store.getRun(workflowRunId);
   const engine = new WorkflowEngine({
-    store: new DrizzleWorkflowStore(),
+    store,
     definitions: [definitions.medicalRecordsFollowUpDefinition, definitions.clientCheckInDefinition],
   });
-  const definition = definitions.getWorkflowDefinition(definitionId);
+  const definition = definitions.getWorkflowDefinition(run.definitionId);
 
-  for await (const event of adapter.startSession({ caseId, workflowRunId })) {
+  for await (const event of adapter.startSession({ caseId: run.caseId, workflowRunId: run.id })) {
     if (event.type === "tool_call") {
       await routeWorkflowAction({
         action: event.action,

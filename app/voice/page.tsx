@@ -19,9 +19,7 @@ export default async function VoicePage() {
         <div className="space-y-3">
           {runs.map((run) => (
             <form key={run.id} action={runSimulatedVoiceSessionAction} className="rounded border border-line bg-white p-4">
-              <input type="hidden" name="caseId" value={run.caseId} />
               <input type="hidden" name="workflowRunId" value={run.id} />
-              <input type="hidden" name="definitionId" value={run.definitionId} />
               <p className="font-medium">{run.title}</p>
               <p className="text-sm text-muted">{run.summary}</p>
               <button className="mt-3 rounded bg-accent px-3 py-2 text-sm font-medium text-white" type="submit">
