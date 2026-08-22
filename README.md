@@ -33,6 +33,8 @@ Run the worker in a separate terminal:
 npm run worker
 ```
 
+The worker requires the application environment to be configured and the Postgres database to be running.
+
 ## Verification
 
 ```powershell

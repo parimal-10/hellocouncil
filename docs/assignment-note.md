@@ -4,6 +4,8 @@
 
 This slice implements a reusable platform around long-running legal-agent workflows. The voice agent runtime is outside the scope of the slice; the platform provides the framework around it: voice-session ingestion, structured tool routing, durable workflow state, human review, timers, retries, and audit events.
 
+The reusable platform/framework approach was chosen because the durable workflow primitives, review controls, audit trail, and provider seams are shared across legal-agent use cases. Keeping those concerns generic lets new workflows vary through definitions and policies instead of duplicating operational infrastructure, while preserving a clear migration path to a production voice runtime and, if needed, Temporal.
+
 ## Product and Platform Primitives
 
 - Workflow definitions
@@ -28,6 +30,8 @@ This slice implements a reusable platform around long-running legal-agent workfl
 - pg-boss worker entrypoint
 - HITL policy
 - Seeded demo data
+
+The worker uses app-DB scheduling claims as the scheduling and state authority, with a pg-boss producer used to enqueue claimed work. pg-boss is therefore a queueing mechanism in the current architecture, not the authority for workflow scheduling or state.
 
 ## Stubbed
 
