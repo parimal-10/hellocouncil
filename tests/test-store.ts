@@ -30,6 +30,15 @@ export class TestWorkflowStore implements WorkflowStore {
     return step;
   }
 
+  async claimDueStep(id: string, now: Date) {
+    const step = this.steps.get(id);
+    if (!step || step.status !== "due" || step.dueAt > now) return null;
+
+    const claimedStep = { ...step, status: "running" as const, attemptCount: step.attemptCount + 1 };
+    this.steps.set(id, claimedStep);
+    return claimedStep;
+  }
+
   async updateRunStatus(id: string, status: WorkflowRunStatus, summary?: string) {
     const run = await this.getRun(id);
     this.runs.set(id, { ...run, status, summary: summary ?? run.summary });

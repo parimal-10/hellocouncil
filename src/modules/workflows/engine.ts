@@ -3,7 +3,7 @@ import type { WorkflowStore } from "./store";
 import type { WorkflowAction, WorkflowDefinition, WorkflowSignal } from "./types";
 
 export type WorkflowStepScheduler = {
-  scheduleDueStep(input: { stepId: string; runAt: Date }): Promise<void>;
+  scheduleDueStep(input: { stepId: string; runAt: Date }): Promise<string>;
 };
 
 export class WorkflowEngine {
@@ -21,13 +21,12 @@ export class WorkflowEngine {
   }
 
   async advanceDueStep(stepId: string, now: Date): Promise<void> {
-    const step = await this.input.store.getStep(stepId);
-    if (step.status !== "due" || step.dueAt > now) return;
+    const step = await this.input.store.claimDueStep(stepId, now);
+    if (!step) return;
 
     const run = await this.input.store.getRun(step.workflowRunId);
     const definition = this.definitionFor(run.definitionId);
 
-    await this.input.store.updateStepStatus(step.id, "running", step.attemptCount + 1);
     await this.input.store.appendEvent({
       workflowRunId: run.id,
       type: "step.running",
@@ -42,7 +41,7 @@ export class WorkflowEngine {
     const decision = definition.reviewPolicy(signal);
 
     if (decision.kind === "block" && decision.reason === "missing_authorization") {
-      await this.blockStep(run.id, step.id, step.attemptCount + 1, decision);
+      await this.blockStep(run.id, step.id, step.attemptCount, decision);
       return;
     }
 
@@ -56,11 +55,11 @@ export class WorkflowEngine {
     });
 
     if (decision.kind === "block") {
-      await this.blockStep(run.id, step.id, step.attemptCount + 1, decision);
+      await this.blockStep(run.id, step.id, step.attemptCount, decision);
       return;
     }
 
-    await this.input.store.updateStepStatus(step.id, "completed", step.attemptCount + 1);
+    await this.input.store.updateStepStatus(step.id, "completed", step.attemptCount);
     await this.input.store.updateRunStatus(run.id, "active", syntheticResponse);
     await this.input.store.appendEvent({
       workflowRunId: run.id,
@@ -85,7 +84,13 @@ export class WorkflowEngine {
         dueAt,
         payload: { failedAttemptCount: signal.attemptCount },
       });
-      await this.input.scheduler?.scheduleDueStep({ stepId: scheduledStep.id, runAt: dueAt });
+      try {
+        const jobId = await this.input.scheduler?.scheduleDueStep({ stepId: scheduledStep.id, runAt: dueAt });
+        if (!jobId) throw new Error("Due-step scheduler did not return a job id.");
+      } catch (error) {
+        await this.markScheduleFailed(run.id, scheduledStep.id, error);
+        return;
+      }
       await this.input.store.appendEvent({
         workflowRunId: run.id,
         type: "step.scheduled",
@@ -146,6 +151,20 @@ export class WorkflowEngine {
       summary: decision.summary,
       actorType: "worker",
       payload: decision,
+    });
+  }
+
+  private async markScheduleFailed(workflowRunId: string, workflowStepId: string, error: unknown) {
+    const message = error instanceof Error ? error.message : "Unknown scheduler error.";
+    const summary = "Workflow step could not be scheduled.";
+    await this.input.store.updateStepStatus(workflowStepId, "failed");
+    await this.input.store.updateRunStatus(workflowRunId, "failed", summary);
+    await this.input.store.appendEvent({
+      workflowRunId,
+      type: "step.schedule_failed",
+      summary,
+      actorType: "worker",
+      payload: { stepId: workflowStepId, error: message },
     });
   }
 

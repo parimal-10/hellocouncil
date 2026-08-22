@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, lte } from "drizzle-orm";
+import { and, asc, desc, eq, lte, sql } from "drizzle-orm";
 import { db, type DbClient } from "@/db/client";
 import {
   contactAttempts,
@@ -47,6 +47,7 @@ export type WorkflowStore = {
   getRun(id: string): Promise<WorkflowRunRecord>;
   getDueSteps(now: Date): Promise<WorkflowStepRecord[]>;
   getStep(id: string): Promise<WorkflowStepRecord>;
+  claimDueStep(id: string, now: Date): Promise<WorkflowStepRecord | null>;
   updateRunStatus(id: string, status: WorkflowRunStatus, summary?: string): Promise<void>;
   updateStepStatus(id: string, status: WorkflowStepStatus, attemptCount?: number): Promise<void>;
   createStep(input: { workflowRunId: string; stepType: string; label: string; dueAt: Date; payload?: Record<string, unknown> }): Promise<WorkflowStepRecord>;
@@ -79,6 +80,19 @@ export class DrizzleWorkflowStore implements WorkflowStore {
     const [step] = await this.client.select().from(workflowSteps).where(eq(workflowSteps.id, id));
     if (!step) throw new Error(`Workflow step not found: ${id}`);
     return step as WorkflowStepRecord;
+  }
+
+  async claimDueStep(id: string, now: Date): Promise<WorkflowStepRecord | null> {
+    const [step] = await this.client
+      .update(workflowSteps)
+      .set({
+        status: "running",
+        attemptCount: sql`${workflowSteps.attemptCount} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(workflowSteps.id, id), eq(workflowSteps.status, "due"), lte(workflowSteps.dueAt, now)))
+      .returning();
+    return (step as WorkflowStepRecord | undefined) ?? null;
   }
 
   async updateRunStatus(id: string, status: WorkflowRunStatus, summary?: string): Promise<void> {

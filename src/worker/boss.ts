@@ -19,7 +19,9 @@ export function createBoss() {
 export class PgBossWorkflowStepScheduler implements WorkflowStepScheduler {
   constructor(private readonly boss: PgBoss) {}
 
-  async scheduleDueStep(input: { stepId: string; runAt: Date }): Promise<void> {
-    await this.boss.sendAfter(jobNames.runDueStep, { stepId: input.stepId }, null, input.runAt);
+  async scheduleDueStep(input: { stepId: string; runAt: Date }): Promise<string> {
+    const jobId = await this.boss.sendAfter(jobNames.runDueStep, { stepId: input.stepId }, null, input.runAt);
+    if (!jobId) throw new Error("pg-boss did not create a due-step job.");
+    return jobId;
   }
 }

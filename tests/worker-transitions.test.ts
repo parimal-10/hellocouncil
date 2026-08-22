@@ -39,6 +39,7 @@ describe("worker transitions", () => {
       scheduler: {
         scheduleDueStep: async (job) => {
           scheduledJobs.push(job);
+          return "job-1";
         },
       },
     });
@@ -113,6 +114,7 @@ describe("worker transitions", () => {
     const engine = new WorkflowEngine({
       store,
       definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
+      scheduler: { scheduleDueStep: async () => "job-1" },
     });
 
     await engine.advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z"));
@@ -120,6 +122,57 @@ describe("worker transitions", () => {
     expect(store.steps.get("step-1")?.status).toBe("completed");
     expect(store.reviews).toHaveLength(0);
     expect(store.contactAttempts[0]?.outcome).toBe("reached");
+  });
+
+  it("claims a due step once when duplicate workers advance it concurrently", async () => {
+    const store = storeWithRun("client-check-in");
+    const engine = new WorkflowEngine({
+      store,
+      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
+      scheduler: { scheduleDueStep: async () => "job-1" },
+    });
+    const now = new Date("2026-08-23T01:00:00.000Z");
+
+    await Promise.all([engine.advanceDueStep("step-1", now), engine.advanceDueStep("step-1", now)]);
+
+    expect(store.contactAttempts).toHaveLength(1);
+    expect(store.steps.get("step-1")?.attemptCount).toBe(1);
+    expect(store.steps.get("step-1")?.status).toBe("completed");
+  });
+
+  it("marks the run and created step failed when scheduler returns no job id", async () => {
+    const store = storeWithRun("client-check-in");
+    const engine = new WorkflowEngine({
+      store,
+      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
+      scheduler: { scheduleDueStep: async () => "" },
+    });
+
+    await engine.advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z"));
+
+    expect(store.runs.get("run-1")?.status).toBe("failed");
+    expect(store.steps.get("step-2")?.status).toBe("failed");
+    expect(store.events.map((event) => event.type)).toContain("step.schedule_failed");
+  });
+
+  it("reconciles due steps that have no queued job", async () => {
+    const store = storeWithRun("client-check-in");
+    const scheduledJobs: Array<{ stepId: string; runAt: Date }> = [];
+    const now = new Date("2026-08-23T01:00:00.000Z");
+    const { reconcileDueSteps } = await import("@/worker/reconcile-due-steps");
+
+    await reconcileDueSteps({
+      store,
+      scheduler: {
+        scheduleDueStep: async (job) => {
+          scheduledJobs.push(job);
+          return "job-1";
+        },
+      },
+      now,
+    });
+
+    expect(scheduledJobs).toEqual([{ stepId: "step-1", runAt: now }]);
   });
 
   it("blocks after the third failed contact", async () => {
