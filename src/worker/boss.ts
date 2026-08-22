@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { PgBoss } from "pg-boss";
+import type { WorkflowStepScheduler } from "@/modules/workflows/engine";
 
 export const jobNames = {
   runDueStep: "workflow.run-due-step",
@@ -13,4 +14,12 @@ export function createBoss() {
     connectionString,
     schema: process.env.PG_BOSS_SCHEMA ?? "pgboss",
   });
+}
+
+export class PgBossWorkflowStepScheduler implements WorkflowStepScheduler {
+  constructor(private readonly boss: PgBoss) {}
+
+  async scheduleDueStep(input: { stepId: string; runAt: Date }): Promise<void> {
+    await this.boss.sendAfter(jobNames.runDueStep, { stepId: input.stepId }, null, input.runAt);
+  }
 }

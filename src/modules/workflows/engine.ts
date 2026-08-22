@@ -2,6 +2,10 @@ import { getSyntheticResponse } from "./synthetic-responses";
 import type { WorkflowStore } from "./store";
 import type { WorkflowAction, WorkflowDefinition, WorkflowSignal } from "./types";
 
+export type WorkflowStepScheduler = {
+  scheduleDueStep(input: { stepId: string; runAt: Date }): Promise<void>;
+};
+
 export class WorkflowEngine {
   private readonly definitionsById: Map<string, WorkflowDefinition>;
 
@@ -10,6 +14,7 @@ export class WorkflowEngine {
       store: WorkflowStore;
       definitions: readonly WorkflowDefinition[];
       syntheticResponses?: Record<string, string>;
+      scheduler?: WorkflowStepScheduler;
     },
   ) {
     this.definitionsById = new Map(input.definitions.map((definition) => [definition.id, definition]));
@@ -17,6 +22,8 @@ export class WorkflowEngine {
 
   async advanceDueStep(stepId: string, now: Date): Promise<void> {
     const step = await this.input.store.getStep(stepId);
+    if (step.status !== "due" || step.dueAt > now) return;
+
     const run = await this.input.store.getRun(step.workflowRunId);
     const definition = this.definitionFor(run.definitionId);
 
@@ -30,30 +37,26 @@ export class WorkflowEngine {
     });
 
     const syntheticResponse = getSyntheticResponse(step.stepType, this.input.syntheticResponses);
-    const signal = this.signalForStep(step.stepType, syntheticResponse, step.attemptCount + 1);
+    const outcome = this.outcomeForResponse(syntheticResponse);
+    const signal = this.signalForStep(step.stepType, syntheticResponse, this.failedAttemptCount(step.payload, outcome), step.payload);
+    const decision = definition.reviewPolicy(signal);
+
+    if (decision.kind === "block" && decision.reason === "missing_authorization") {
+      await this.blockStep(run.id, step.id, step.attemptCount + 1, decision);
+      return;
+    }
 
     await this.input.store.createContactAttempt({
       workflowRunId: run.id,
       workflowStepId: step.id,
       channel: signal.channel,
-      outcome: signal.text.toLowerCase().includes("cannot") ? "refused" : "reached",
+      outcome,
       summary: `Synthetic ${signal.channel} attempt: ${syntheticResponse}`,
       syntheticResponse,
     });
 
-    const decision = definition.reviewPolicy(signal);
-
     if (decision.kind === "block") {
-      await this.input.store.updateStepStatus(step.id, "waiting_for_human", step.attemptCount + 1);
-      await this.input.store.updateRunStatus(run.id, "waiting_for_human", decision.summary);
-      await this.input.store.createReview({ workflowRunId: run.id, workflowStepId: step.id, decision });
-      await this.input.store.appendEvent({
-        workflowRunId: run.id,
-        type: "review.created",
-        summary: decision.summary,
-        actorType: "worker",
-        payload: decision,
-      });
+      await this.blockStep(run.id, step.id, step.attemptCount + 1, decision);
       return;
     }
 
@@ -75,13 +78,14 @@ export class WorkflowEngine {
 
     if (nextStep) {
       const dueAt = new Date(now.getTime() + nextStep.defaultDueInHours * 60 * 60 * 1000);
-      await this.input.store.createStep({
+      const scheduledStep = await this.input.store.createStep({
         workflowRunId: run.id,
         stepType: nextStep.type,
         label: nextStep.label,
         dueAt,
-        payload: {},
+        payload: { failedAttemptCount: signal.attemptCount },
       });
+      await this.input.scheduler?.scheduleDueStep({ stepId: scheduledStep.id, runAt: dueAt });
       await this.input.store.appendEvent({
         workflowRunId: run.id,
         type: "step.scheduled",
@@ -127,14 +131,64 @@ export class WorkflowEngine {
     return definition;
   }
 
-  private signalForStep(stepType: string, text: string, attemptCount: number): WorkflowSignal {
+  private async blockStep(
+    workflowRunId: string,
+    workflowStepId: string,
+    attemptCount: number,
+    decision: Extract<ReturnType<WorkflowDefinition["reviewPolicy"]>, { kind: "block" }>,
+  ) {
+    await this.input.store.updateStepStatus(workflowStepId, "waiting_for_human", attemptCount);
+    await this.input.store.updateRunStatus(workflowRunId, "waiting_for_human", decision.summary);
+    await this.input.store.createReview({ workflowRunId, workflowStepId, decision });
+    await this.input.store.appendEvent({
+      workflowRunId,
+      type: "review.created",
+      summary: decision.summary,
+      actorType: "worker",
+      payload: decision,
+    });
+  }
+
+  private signalForStep(stepType: string, text: string, failedAttemptCount: number, payload: unknown): WorkflowSignal {
     const actorRole = stepType === "client_check_in" ? "client" : "provider";
     return {
       text,
       channel: "phone",
-      attemptCount,
-      hasAuthorization: true,
+      attemptCount: failedAttemptCount,
+      hasAuthorization: this.hasAuthorization(stepType, payload),
       actorRole,
     };
+  }
+
+  private outcomeForResponse(text: string) {
+    const normalized = text.toLowerCase();
+    if (normalized.includes("cannot")) return "refused";
+    if (normalized.includes("no response") || normalized.includes("unable to reach") || normalized.includes("unreachable")) return "failed";
+    return "reached";
+  }
+
+  private failedAttemptCount(payload: unknown, outcome: string) {
+    const priorCount = this.payloadNumber(payload, "failedAttemptCount");
+    return priorCount + (outcome === "failed" ? 1 : 0);
+  }
+
+  private hasAuthorization(stepType: string, payload: unknown) {
+    return stepType === "provider_follow_up" ? this.payloadBoolean(payload, "hasAuthorization", true) : true;
+  }
+
+  private payloadNumber(payload: unknown, key: string) {
+    if (!this.isPayload(payload)) return 0;
+    const value = payload[key];
+    return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0;
+  }
+
+  private payloadBoolean(payload: unknown, key: string, fallback: boolean) {
+    if (!this.isPayload(payload)) return fallback;
+    const value = payload[key];
+    return typeof value === "boolean" ? value : fallback;
+  }
+
+  private isPayload(payload: unknown): payload is Record<string, unknown> {
+    return typeof payload === "object" && payload !== null;
   }
 }
