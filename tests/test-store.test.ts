@@ -22,20 +22,18 @@ describe("TestWorkflowStore", () => {
     ]);
   });
 
-  it("records voice actions as workflow events", async () => {
+  it("merges reviewed context into a step payload", async () => {
     const store = new TestWorkflowStore();
+    const step = await store.createStep({
+      workflowRunId: "run-1",
+      stepType: "provider_follow_up",
+      label: "Follow up with provider",
+      dueAt: new Date("2026-08-23T10:00:00.000Z"),
+      payload: { failedAttemptCount: 1 },
+    });
 
-    await expect(
-      store.applyAction({
-        type: "create_update",
-        workflowRunId: "run-1",
-        summary: "Client confirmed the appointment.",
-        source: "voice_session",
-      }),
-    ).resolves.toEqual({ ok: true, message: "Applied create_update" });
+    await store.updateStepPayload(step.id, { hasAuthorization: true });
 
-    expect(store.events).toEqual([
-      expect.objectContaining({ type: "action.create_update", actorType: "voice_agent" }),
-    ]);
+    expect(store.steps.get(step.id)?.payload).toEqual({ failedAttemptCount: 1, hasAuthorization: true });
   });
 });

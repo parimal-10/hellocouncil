@@ -1,4 +1,4 @@
-import { asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, lte } from "drizzle-orm";
 
 type CaseContext = {
   caseId: string;
@@ -13,7 +13,20 @@ type DashboardDatabase = Awaited<ReturnType<typeof loadDashboardDatabase>>;
 export async function getDashboardData() {
   const database = await loadDashboardDatabase();
   const { db, humanReviewRequests, workflowEvents, workflowRuns, workflowSteps } = database;
-  const [runs, reviewRows, dueStepRows, events] = await Promise.all([
+  const now = new Date();
+  const [
+    runs,
+    reviewRows,
+    dueStepRows,
+    upcomingStepRows,
+    events,
+    [activeRunCount],
+    [blockedRunCount],
+    [openReviewCount],
+    [dueStepCount],
+    [upcomingStepCount],
+    workflowTypeCounts,
+  ] = await Promise.all([
     db.select().from(workflowRuns).orderBy(desc(workflowRuns.updatedAt)).limit(12),
     db
       .select({ review: humanReviewRequests, run: workflowRuns })
@@ -26,28 +39,66 @@ export async function getDashboardData() {
       .select({ step: workflowSteps, run: workflowRuns })
       .from(workflowSteps)
       .innerJoin(workflowRuns, eq(workflowSteps.workflowRunId, workflowRuns.id))
-      .where(eq(workflowSteps.status, "due"))
+      .where(and(eq(workflowSteps.status, "due"), lte(workflowSteps.dueAt, now)))
+      .orderBy(asc(workflowSteps.dueAt))
+      .limit(12),
+    db
+      .select({ step: workflowSteps, run: workflowRuns })
+      .from(workflowSteps)
+      .innerJoin(workflowRuns, eq(workflowSteps.workflowRunId, workflowRuns.id))
+      .where(and(eq(workflowSteps.status, "due"), gt(workflowSteps.dueAt, now)))
       .orderBy(asc(workflowSteps.dueAt))
       .limit(12),
     db.select().from(workflowEvents).orderBy(desc(workflowEvents.occurredAt)).limit(12),
+    db.select({ value: count() }).from(workflowRuns).where(eq(workflowRuns.status, "active")),
+    db.select({ value: count() }).from(workflowRuns).where(eq(workflowRuns.status, "waiting_for_human")),
+    db.select({ value: count() }).from(humanReviewRequests).where(inArray(humanReviewRequests.status, ["open", "assigned"])),
+    db.select({ value: count() }).from(workflowSteps).where(and(eq(workflowSteps.status, "due"), lte(workflowSteps.dueAt, now))),
+    db.select({ value: count() }).from(workflowSteps).where(and(eq(workflowSteps.status, "due"), gt(workflowSteps.dueAt, now))),
+    db.select({ definitionId: workflowRuns.definitionId, value: count() }).from(workflowRuns).groupBy(workflowRuns.definitionId),
   ]);
   const contexts = await getCaseContexts(
     database,
-    [...runs, ...reviewRows.map((row) => row.run), ...dueStepRows.map((row) => row.run)].map((run) => run.caseId),
+    [
+      ...runs,
+      ...reviewRows.map((row) => row.run),
+      ...dueStepRows.map((row) => row.run),
+      ...upcomingStepRows.map((row) => row.run),
+    ].map((run) => run.caseId),
   );
 
   return {
     runs: runs.map((run) => ({ ...run, context: contexts.get(run.caseId) })),
     reviews: reviewRows.map(({ review, run }) => ({ ...review, runTitle: run.title, context: contexts.get(run.caseId) })),
     dueSteps: dueStepRows.map(({ step, run }) => ({ ...step, runTitle: run.title, context: contexts.get(run.caseId) })),
+    upcomingSteps: upcomingStepRows.map(({ step, run }) => ({ ...step, runTitle: run.title, context: contexts.get(run.caseId) })),
     events,
     counts: {
-      activeRuns: runs.filter((run) => run.status === "active").length,
-      blockedRuns: runs.filter((run) => run.status === "waiting_for_human").length,
-      openReviews: reviewRows.length,
-      dueSteps: dueStepRows.length,
+      activeRuns: activeRunCount.value,
+      blockedRuns: blockedRunCount.value,
+      openReviews: openReviewCount.value,
+      dueSteps: dueStepCount.value,
+      upcomingSteps: upcomingStepCount.value,
+      workflowTypes: workflowTypeCounts,
     },
   };
+}
+
+export async function getVoiceConsoleData() {
+  const database = await loadDashboardDatabase();
+  const { db, voiceSessionEvents, voiceSessions, workflowRuns } = database;
+  const [runs, sessions, eventRows] = await Promise.all([
+    db.select().from(workflowRuns).orderBy(desc(workflowRuns.updatedAt)).limit(10),
+    db.select().from(voiceSessions).orderBy(desc(voiceSessions.startedAt)).limit(10),
+    db
+      .select({ event: voiceSessionEvents, session: voiceSessions })
+      .from(voiceSessionEvents)
+      .innerJoin(voiceSessions, eq(voiceSessionEvents.voiceSessionId, voiceSessions.id))
+      .orderBy(desc(voiceSessionEvents.occurredAt))
+      .limit(40),
+  ]);
+
+  return { runs, sessions, events: eventRows };
 }
 
 export async function getWorkflowDetail(id: string) {

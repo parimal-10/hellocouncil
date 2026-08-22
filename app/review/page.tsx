@@ -60,13 +60,16 @@ export default async function ReviewPage() {
                   Edit and resume
                 </button>
                 <button className="rounded border border-line px-3 py-2 text-sm font-medium" type="submit" name="resolution" value="rejected">
-                  Reject and resume
+                  Reject automation
                 </button>
                 <button className="rounded bg-accent px-3 py-2 text-sm font-medium text-white" type="submit" name="resolution" value="resolved">
                   Resolve and resume
                 </button>
                 <button className="rounded border border-line px-3 py-2 text-sm font-medium" type="submit" name="resolution" value="assigned">
                   Assign owner
+                </button>
+                <button className="rounded border border-line px-3 py-2 text-sm font-medium" type="submit" name="resolution" value="note">
+                  Add note only
                 </button>
               </div>
             </form>

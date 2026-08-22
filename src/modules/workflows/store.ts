@@ -8,7 +8,7 @@ import {
   workflowRuns,
   workflowSteps,
 } from "@/db/schema";
-import type { ReviewDecision, ReviewRequestStatus, WorkflowAction, WorkflowDefinitionId, WorkflowRunStatus, WorkflowStepStatus } from "./types";
+import type { ReviewDecision, ReviewRequestStatus, WorkflowDefinitionId, WorkflowRunStatus, WorkflowStepStatus } from "./types";
 
 export type WorkflowRunRecord = {
   id: string;
@@ -52,6 +52,7 @@ export type ReviewRequestRecord = {
   workflowStepId: string | null;
   status: ReviewRequestStatus;
   assignedUserId: string | null;
+  reason: string;
 };
 
 export type WorkflowStore = {
@@ -66,6 +67,8 @@ export type WorkflowStore = {
   releaseDueStepSchedulingClaim(id: string, claimUntil: Date): Promise<void>;
   updateRunStatus(id: string, status: WorkflowRunStatus, summary?: string): Promise<void>;
   updateStepStatus(id: string, status: WorkflowStepStatus, attemptCount?: number): Promise<void>;
+  updateStepPayload(id: string, patch: Record<string, unknown>): Promise<void>;
+  transitionClaimedStepAfterFailure(id: string, attemptCount: number, status: "due" | "failed"): Promise<boolean>;
   rescheduleStep(id: string, dueAt: Date): Promise<void>;
   createStep(input: { workflowRunId: string; stepType: string; label: string; dueAt: Date; payload?: Record<string, unknown> }): Promise<WorkflowStepRecord>;
   appendEvent(input: AppendWorkflowEventInput): Promise<void>;
@@ -77,7 +80,6 @@ export type WorkflowStore = {
     assignedUserId?: string;
   }): Promise<void>;
   createContactAttempt(input: { workflowRunId: string; workflowStepId?: string; channel: string; outcome: string; summary: string; syntheticResponse?: string }): Promise<void>;
-  applyAction(action: WorkflowAction): Promise<{ ok: boolean; message: string }>;
 };
 
 export class DrizzleWorkflowStore implements WorkflowStore {
@@ -194,6 +196,36 @@ export class DrizzleWorkflowStore implements WorkflowStore {
       .where(eq(workflowSteps.id, id));
   }
 
+  async updateStepPayload(id: string, patch: Record<string, unknown>): Promise<void> {
+    await this.client
+      .update(workflowSteps)
+      .set({
+        payload: sql`${workflowSteps.payload} || ${JSON.stringify(patch)}::jsonb`,
+        updatedAt: new Date(),
+      })
+      .where(eq(workflowSteps.id, id));
+  }
+
+  async transitionClaimedStepAfterFailure(id: string, attemptCount: number, status: "due" | "failed"): Promise<boolean> {
+    const [step] = await this.client
+      .update(workflowSteps)
+      .set({
+        status,
+        queueJobScheduledAt: null,
+        queueSchedulingClaimUntil: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(workflowSteps.id, id),
+          eq(workflowSteps.status, "running"),
+          eq(workflowSteps.attemptCount, attemptCount),
+        ),
+      )
+      .returning({ id: workflowSteps.id });
+    return Boolean(step);
+  }
+
   async rescheduleStep(id: string, dueAt: Date): Promise<void> {
     await this.client
       .update(workflowSteps)
@@ -269,20 +301,6 @@ export class DrizzleWorkflowStore implements WorkflowStore {
 
   async createContactAttempt(input: { workflowRunId: string; workflowStepId?: string; channel: string; outcome: string; summary: string; syntheticResponse?: string }): Promise<void> {
     await this.client.insert(contactAttempts).values(input);
-  }
-
-  async applyAction(action: WorkflowAction): Promise<{ ok: boolean; message: string }> {
-    if (action.type === "resolve_blocked_step") {
-      throw new Error("Review resolution must be handled by the workflow engine.");
-    }
-    await this.appendEvent({
-      workflowRunId: action.workflowRunId,
-      type: `action.${action.type}`,
-      summary: "Voice action routed into workflow engine.",
-      actorType: "voice_agent",
-      payload: action,
-    });
-    return { ok: true, message: `Applied ${action.type}` };
   }
 
   async recentEvents(limit = 20) {

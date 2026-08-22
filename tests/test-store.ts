@@ -6,7 +6,7 @@ import type {
   WorkflowStepRecord,
   WorkflowStore,
 } from "@/modules/workflows/store";
-import type { WorkflowAction, WorkflowRunStatus, WorkflowStepStatus } from "@/modules/workflows/types";
+import type { WorkflowRunStatus, WorkflowStepStatus } from "@/modules/workflows/types";
 
 export class TestWorkflowStore implements WorkflowStore {
   runs = new Map<string, WorkflowRunRecord>();
@@ -47,6 +47,7 @@ export class TestWorkflowStore implements WorkflowStore {
       workflowStepId: review.workflowStepId ?? null,
       status: review.status as ReviewRequestRecord["status"],
       assignedUserId: null,
+      reason: review.decision.reason,
     };
   }
 
@@ -111,6 +112,24 @@ export class TestWorkflowStore implements WorkflowStore {
     this.steps.set(id, { ...step, status, attemptCount: attemptCount ?? step.attemptCount });
   }
 
+  async updateStepPayload(id: string, patch: Record<string, unknown>) {
+    const step = await this.getStep(id);
+    const payload = typeof step.payload === "object" && step.payload !== null ? step.payload : {};
+    this.steps.set(id, { ...step, payload: { ...payload, ...patch } });
+  }
+
+  async transitionClaimedStepAfterFailure(id: string, attemptCount: number, status: "due" | "failed") {
+    const step = await this.getStep(id);
+    if (step.status !== "running" || step.attemptCount !== attemptCount) return false;
+    this.steps.set(id, {
+      ...step,
+      status,
+      queueJobScheduledAt: null,
+      queueSchedulingClaimUntil: null,
+    });
+    return true;
+  }
+
   async rescheduleStep(id: string, dueAt: Date) {
     const step = await this.getStep(id);
     this.steps.set(id, {
@@ -162,23 +181,13 @@ export class TestWorkflowStore implements WorkflowStore {
     }
     review.status = input.status;
     review.note = input.note;
+    if (input.assignedUserId) {
+      Object.assign(review, { assignedUserId: input.assignedUserId });
+    }
   }
 
   async createContactAttempt(input: { workflowRunId: string; workflowStepId?: string; channel: string; outcome: string; summary: string; syntheticResponse?: string }) {
     this.contactAttempts.push(input);
   }
 
-  async applyAction(action: WorkflowAction) {
-    if (action.type === "resolve_blocked_step") {
-      throw new Error("Review resolution must be handled by the workflow engine.");
-    }
-    await this.appendEvent({
-      workflowRunId: action.workflowRunId,
-      type: `action.${action.type}`,
-      summary: "Applied action in test store.",
-      actorType: "voice_agent",
-      payload: action,
-    });
-    return { ok: true, message: `Applied ${action.type}` };
-  }
 }

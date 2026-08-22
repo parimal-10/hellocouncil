@@ -13,6 +13,7 @@ vi.mock("@/modules/workflows/action-router", () => ({ routeWorkflowAction: mocks
 vi.mock("@/modules/workflows/definitions", () => ({
   medicalRecordsFollowUpDefinition: { id: "medical-records-follow-up" },
   clientCheckInDefinition: { id: "client-check-in" },
+  workflowDefinitions: [{ id: "medical-records-follow-up" }, { id: "client-check-in" }],
   getWorkflowDefinition: mocks.getWorkflowDefinition,
 }));
 vi.mock("@/modules/workflows/engine", () => ({ WorkflowEngine: class WorkflowEngine {} }));
@@ -40,6 +41,13 @@ vi.mock("@/modules/voice/simulated-adapter", () => ({
         };
       })();
     }
+  },
+}));
+vi.mock("@/modules/voice/store", () => ({
+  DrizzleVoiceSessionStore: class DrizzleVoiceSessionStore {
+    createSession = async () => "voice-1";
+    appendSessionEvent = async () => undefined;
+    completeSession = async () => undefined;
   },
 }));
 

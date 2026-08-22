@@ -28,7 +28,10 @@ The reusable platform/framework approach was chosen because the durable workflow
 - Client check-in definition
 - DB-backed workflow state
 - pg-boss worker entrypoint
+- Retryable claimed-step recovery with retry-limit enforcement
 - HITL policy
+- Distinct assign, approve, edit, reject, resolve, and note-only review actions
+- Persisted simulated voice lifecycle, transcripts, tool calls, and tool results
 - Seeded demo data
 
 The worker uses app-DB scheduling claims as the scheduling and state authority, with a pg-boss producer used to enqueue claimed work. pg-boss is therefore a queueing mechanism in the current architecture, not the authority for workflow scheduling or state.
@@ -46,6 +49,8 @@ The worker uses app-DB scheduling claims as the scheduling and state authority, 
 The simulated voice session proves the provider seam and tool-routing contract, but it does not validate real audio latency, VAD, or interruption behavior. Synthetic communication responses cannot capture the variance of medical providers or client conversations.
 
 The DB-backed worker is appropriate for this slice. Temporal is the production migration path if workflow branching, retries, and multi-month duration outgrow the current runner. The domain primitives remain explicit so they can map to Temporal workflows, activities, signals, and queries later.
+
+The demo seed is intentionally non-idempotent and should be run against a fresh local database. Production-grade seed reconciliation remains outside this assignment slice.
 
 ## Adding a New Use Case
 

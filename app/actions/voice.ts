@@ -3,13 +3,15 @@
 import { revalidatePath } from "next/cache";
 import { routeWorkflowAction } from "@/modules/workflows/action-router";
 import { SimulatedVoiceSessionAdapter } from "@/modules/voice/simulated-adapter";
+import { runVoiceSession } from "@/modules/voice/session-runner";
 
 export async function runSimulatedVoiceSessionAction(formData: FormData) {
   const workflowRunId = String(formData.get("workflowRunId"));
-  const [definitions, { WorkflowEngine }, { DrizzleWorkflowStore }] = await Promise.all([
+  const [definitions, { WorkflowEngine }, { DrizzleWorkflowStore }, { DrizzleVoiceSessionStore }] = await Promise.all([
     import("@/modules/workflows/definitions"),
     import("@/modules/workflows/engine"),
     import("@/modules/workflows/store"),
+    import("@/modules/voice/store"),
   ]);
 
   const adapter = new SimulatedVoiceSessionAdapter();
@@ -17,19 +19,22 @@ export async function runSimulatedVoiceSessionAction(formData: FormData) {
   const run = await store.getRun(workflowRunId);
   const engine = new WorkflowEngine({
     store,
-    definitions: [definitions.medicalRecordsFollowUpDefinition, definitions.clientCheckInDefinition],
+    definitions: definitions.workflowDefinitions,
   });
   const definition = definitions.getWorkflowDefinition(run.definitionId);
 
-  for await (const event of adapter.startSession({ caseId: run.caseId, workflowRunId: run.id })) {
-    if (event.type === "tool_call") {
-      await routeWorkflowAction({
-        action: event.action,
+  await runVoiceSession({
+    adapter,
+    persistence: new DrizzleVoiceSessionStore(),
+    caseId: run.caseId,
+    workflowRunId: run.id,
+    executeAction: (action) =>
+      routeWorkflowAction({
+        action,
         definition,
         engine,
-      });
-    }
-  }
+      }),
+  });
 
   revalidatePath("/");
   revalidatePath("/voice");

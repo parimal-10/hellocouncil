@@ -21,7 +21,7 @@ export const medicalRecordsFollowUpDefinition: WorkflowDefinition = {
   description: "Follow up with a medical provider for records status updates.",
   requiredContext: ["case", "client", "provider", "assigned_user"],
   stepTemplates: [providerFollowUpStep],
-  allowedActions: ["create_update", "request_review", "mark_contact_attempt", "schedule_follow_up", "resolve_blocked_step"],
+  allowedActions: ["create_update", "request_review", "mark_contact_attempt", "schedule_follow_up", "resolve_blocked_step", "add_review_note"],
   reviewPolicy: evaluateHumanReviewPolicy,
   scheduleNextStep: ({ signal }) => {
     if (signal.text.toLowerCase().includes("records are ready")) {
@@ -37,7 +37,7 @@ export const clientCheckInDefinition: WorkflowDefinition = {
   description: "Periodically check in with a client and surface meaningful updates.",
   requiredContext: ["case", "client", "assigned_user"],
   stepTemplates: [clientCheckInStep],
-  allowedActions: ["create_update", "request_review", "mark_contact_attempt", "schedule_follow_up", "resolve_blocked_step"],
+  allowedActions: ["create_update", "request_review", "mark_contact_attempt", "schedule_follow_up", "resolve_blocked_step", "add_review_note"],
   reviewPolicy: evaluateHumanReviewPolicy,
   scheduleNextStep: () => clientCheckInStep,
 };

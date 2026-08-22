@@ -171,19 +171,19 @@ describe("worker transitions", () => {
     expect(calls).toEqual([[jobNames.runDueStep, { policy: "key_strict_fifo" }]]);
   });
 
-  it("uses the workflow step id as the deterministic pg-boss job id", async () => {
+  it("uses fresh pg-boss job ids when the same reviewed step is rescheduled", async () => {
     const calls: Array<{ method: string; args: unknown[] }> = [];
     const boss = {
       send: async (...args: unknown[]) => {
         calls.push({ method: "send", args });
-        return calls.length === 1 ? "step-1" : null;
+        return `job-${calls.length}`;
       },
     };
     const scheduler = new PgBossWorkflowStepScheduler(boss as never);
     const runAt = new Date("2026-08-23T01:00:00.000Z");
 
-    await expect(scheduler.scheduleDueStep({ stepId: "step-1", runAt })).resolves.toBe("step-1");
-    await expect(scheduler.scheduleDueStep({ stepId: "step-1", runAt })).resolves.toBe("step-1");
+    await expect(scheduler.scheduleDueStep({ stepId: "step-1", runAt })).resolves.toBe("job-1");
+    await expect(scheduler.scheduleDueStep({ stepId: "step-1", runAt })).resolves.toBe("job-2");
 
     expect(calls).toEqual([
       {
@@ -191,7 +191,7 @@ describe("worker transitions", () => {
         args: [
           jobNames.runDueStep,
           { stepId: "step-1" },
-          { id: "step-1", singletonKey: "workflow.run-due-step:step-1", startAfter: runAt },
+          { singletonKey: "workflow.run-due-step:step-1", startAfter: runAt },
         ],
       },
       {
@@ -199,8 +199,67 @@ describe("worker transitions", () => {
         args: [
           jobNames.runDueStep,
           { stepId: "step-1" },
-          { id: "step-1", singletonKey: "workflow.run-due-step:step-1", startAfter: runAt },
+          { singletonKey: "workflow.run-due-step:step-1", startAfter: runAt },
         ],
+      },
+    ]);
+  });
+
+  it("rejects a pg-boss send that does not create a runnable job", async () => {
+    const scheduler = new PgBossWorkflowStepScheduler({ send: async () => null } as never);
+
+    await expect(
+      scheduler.scheduleDueStep({ stepId: "step-1", runAt: new Date("2026-08-23T01:00:00.000Z") }),
+    ).rejects.toThrow("did not return a job id");
+  });
+
+  it("enqueues the same workflow step again after human review reschedules it", async () => {
+    const store = storeWithRun("medical-records-follow-up");
+    const calls: unknown[][] = [];
+    const scheduler = new PgBossWorkflowStepScheduler({
+      send: async (...args: unknown[]) => {
+        calls.push(args);
+        return `job-${calls.length}`;
+      },
+    } as never);
+    await scheduler.scheduleDueStep({ stepId: "step-1", runAt: new Date("2026-08-23T00:00:00.000Z") });
+    store.steps.set("step-1", {
+      ...store.steps.get("step-1")!,
+      status: "waiting_for_human",
+      queueJobScheduledAt: new Date("2026-08-23T00:00:00.000Z"),
+    });
+    store.runs.set("run-1", { ...store.runs.get("run-1")!, status: "waiting_for_human" });
+    store.reviews.push({
+      id: "review-1",
+      status: "open",
+      workflowRunId: "run-1",
+      workflowStepId: "step-1",
+      decision: {
+        kind: "block",
+        reason: "missing_authorization",
+        severity: "high",
+        recommendedAction: "Verify authorization.",
+        summary: "Authorization missing.",
+      },
+    });
+    const engine = new WorkflowEngine({ store, definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition] });
+
+    await engine.applyAction({
+      type: "resolve_blocked_step",
+      reviewRequestId: "review-1",
+      resolution: "approved",
+      note: "Authorization verified.",
+    });
+    const scheduledCount = await reconcileDueSteps({ store, scheduler, now: new Date("2100-01-01T00:00:00.000Z") });
+
+    expect(scheduledCount).toBe(1);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toEqual([
+      jobNames.runDueStep,
+      { stepId: "step-1" },
+      {
+        singletonKey: "workflow.run-due-step:step-1",
+        startAfter: new Date("2100-01-01T00:00:00.000Z"),
       },
     ]);
   });
@@ -338,6 +397,102 @@ describe("worker transitions", () => {
     await engine.advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z"));
 
     expect(store.reviews[0]?.decision.reason).toBe("sensitive_legal_advice");
+  });
+
+  it("returns a claimed step to due when processing throws so it can be retried", async () => {
+    class FailingContactStore extends TestWorkflowStore {
+      failNextContactAttempt = true;
+
+      override async createContactAttempt(input: Parameters<TestWorkflowStore["createContactAttempt"]>[0]) {
+        if (this.failNextContactAttempt) {
+          this.failNextContactAttempt = false;
+          throw new Error("contact persistence unavailable");
+        }
+        return super.createContactAttempt(input);
+      }
+    }
+
+    const store = new FailingContactStore();
+    store.runs.set("run-1", {
+      id: "run-1",
+      definitionId: "medical-records-follow-up",
+      caseId: "case-1",
+      status: "active",
+      title: "Test run",
+      summary: "",
+    });
+    store.steps.set("step-1", {
+      id: "step-1",
+      workflowRunId: "run-1",
+      stepType: "provider_follow_up",
+      label: "Due step",
+      status: "due",
+      dueAt: new Date("2026-08-23T00:00:00.000Z"),
+      attemptCount: 0,
+      payload: {},
+    });
+    const engine = new WorkflowEngine({
+      store,
+      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
+      syntheticResponses: { provider_follow_up: "Records are ready for pickup." },
+    });
+    const now = new Date("2026-08-23T01:00:00.000Z");
+
+    await expect(engine.advanceDueStep("step-1", now)).rejects.toThrow("contact persistence unavailable");
+
+    expect(store.steps.get("step-1")?.status).toBe("due");
+    expect(store.events).toContainEqual(
+      expect.objectContaining({ workflowRunId: "run-1", type: "step.processing_failed" }),
+    );
+
+    await expect(engine.advanceDueStep("step-1", now)).resolves.toBeUndefined();
+    expect(store.steps.get("step-1")?.status).toBe("completed");
+  });
+
+  it("fails a claimed step after its processing retry limit is exhausted", async () => {
+    class FailingContactStore extends TestWorkflowStore {
+      override async createContactAttempt() {
+        throw new Error("contact persistence unavailable");
+      }
+    }
+
+    const store = new FailingContactStore();
+    store.runs.set("run-1", {
+      id: "run-1",
+      definitionId: "medical-records-follow-up",
+      caseId: "case-1",
+      status: "active",
+      title: "Test run",
+      summary: "",
+    });
+    store.steps.set("step-1", {
+      id: "step-1",
+      workflowRunId: "run-1",
+      stepType: "provider_follow_up",
+      label: "Due step",
+      status: "due",
+      dueAt: new Date("2026-08-23T00:00:00.000Z"),
+      attemptCount: 3,
+      payload: {},
+    });
+    const engine = new WorkflowEngine({
+      store,
+      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
+      syntheticResponses: { provider_follow_up: "Records are ready for pickup." },
+    });
+
+    await expect(
+      engine.advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z")),
+    ).rejects.toThrow("contact persistence unavailable");
+
+    expect(store.steps.get("step-1")?.status).toBe("failed");
+    expect(store.runs.get("run-1")?.status).toBe("failed");
+    expect(store.events).toContainEqual(
+      expect.objectContaining({
+        type: "step.processing_failed",
+        payload: expect.objectContaining({ retryLimit: 3, retryable: false }),
+      }),
+    );
   });
 
   it("resolves a blocked step through a controlled review action", async () => {

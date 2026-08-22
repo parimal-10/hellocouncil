@@ -15,12 +15,20 @@ export default async function DashboardPage() {
         <p className="text-sm text-muted">Long-running agent workflows across active cases.</p>
       </div>
 
-      <section className="grid gap-3 md:grid-cols-4">
+      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
         <Metric icon={<Workflow size={18} />} label="Active runs" value={data.counts.activeRuns} />
         <Metric icon={<AlertCircle size={18} />} label="Blocked runs" value={data.counts.blockedRuns} />
         <Metric icon={<AlertCircle size={18} />} label="Open reviews" value={data.counts.openReviews} />
-        <Metric icon={<CalendarClock size={18} />} label="Due steps" value={data.counts.dueSteps} />
+        <Metric icon={<CalendarClock size={18} />} label="Due now" value={data.counts.dueSteps} />
+        <Metric icon={<CalendarClock size={18} />} label="Upcoming" value={data.counts.upcomingSteps} />
       </section>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-y border-line py-2 text-xs text-muted">
+        <span className="font-medium text-ink">Runs by workflow</span>
+        {data.counts.workflowTypes.map((item) => (
+          <span key={item.definitionId}>{item.definitionId}: {item.value}</span>
+        ))}
+      </div>
 
       <section className="grid gap-4 lg:grid-cols-2">
         <Panel title="Workflow runs">
@@ -63,26 +71,49 @@ export default async function DashboardPage() {
         </Panel>
       </section>
 
-      <Panel title="Due follow-ups" icon={<CalendarClock size={18} />}>
-        {data.dueSteps.length === 0 ? (
-          <EmptyState>No follow-ups are currently due.</EmptyState>
-        ) : (
-          <div className="divide-y divide-line">
-            {data.dueSteps.map((step) => (
-              <Link key={step.id} href={`/workflows/${step.workflowRunId}`} className="block py-3">
-                <div className="flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="font-medium">{step.label}</p>
-                    <p className="text-sm text-muted">{step.runTitle}</p>
-                    <p className="mt-1 text-xs text-muted">{contextSummary(step.context)}</p>
+      <section className="grid gap-4 lg:grid-cols-2">
+        <Panel title="Due now and overdue" icon={<CalendarClock size={18} />}>
+          {data.dueSteps.length === 0 ? (
+            <EmptyState>No follow-ups are currently due.</EmptyState>
+          ) : (
+            <div className="divide-y divide-line">
+              {data.dueSteps.map((step) => (
+                <Link key={step.id} href={`/workflows/${step.workflowRunId}`} className="block py-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="font-medium">{step.label}</p>
+                      <p className="text-sm text-muted">{step.runTitle}</p>
+                      <p className="mt-1 text-xs text-muted">{contextSummary(step.context)}</p>
+                    </div>
+                    <span className="shrink-0 text-xs text-muted">{step.dueAt.toLocaleString()}</span>
                   </div>
-                  <span className="shrink-0 text-xs text-muted">{step.dueAt.toLocaleString()}</span>
-                </div>
-              </Link>
-            ))}
-          </div>
-        )}
-      </Panel>
+                </Link>
+              ))}
+            </div>
+          )}
+        </Panel>
+
+        <Panel title="Upcoming follow-ups" icon={<CalendarClock size={18} />}>
+          {data.upcomingSteps.length === 0 ? (
+            <EmptyState>No future follow-ups are scheduled.</EmptyState>
+          ) : (
+            <div className="divide-y divide-line">
+              {data.upcomingSteps.map((step) => (
+                <Link key={step.id} href={`/workflows/${step.workflowRunId}`} className="block py-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="font-medium">{step.label}</p>
+                      <p className="text-sm text-muted">{step.runTitle}</p>
+                      <p className="mt-1 text-xs text-muted">{contextSummary(step.context)}</p>
+                    </div>
+                    <span className="shrink-0 text-xs text-muted">{step.dueAt.toLocaleString()}</span>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
+        </Panel>
+      </section>
 
       <Panel title="Recent audit events" icon={<History size={18} />}>
         {data.events.length === 0 ? (

@@ -15,16 +15,20 @@ export async function resolveReviewAction(formData: FormData) {
 
   const engine = new WorkflowEngine({
     store: new DrizzleWorkflowStore(),
-    definitions: [definitions.medicalRecordsFollowUpDefinition, definitions.clientCheckInDefinition],
+    definitions: definitions.workflowDefinitions,
   });
 
-  await engine.applyAction({
-    type: "resolve_blocked_step",
-    reviewRequestId,
-    resolution,
-    note,
-    assignedUserId,
-  });
+  if (resolution === "note") {
+    await engine.applyAction({ type: "add_review_note", reviewRequestId, note });
+  } else {
+    await engine.applyAction({
+      type: "resolve_blocked_step",
+      reviewRequestId,
+      resolution,
+      note,
+      assignedUserId,
+    });
+  }
 
   revalidatePath("/");
   revalidatePath("/review");
@@ -43,7 +47,7 @@ function optionalFormValue(formData: FormData, name: string) {
 }
 
 function reviewResolution(value: FormDataEntryValue | null) {
-  if (value === "approved" || value === "edited" || value === "rejected" || value === "resolved" || value === "assigned") {
+  if (value === "approved" || value === "edited" || value === "rejected" || value === "resolved" || value === "assigned" || value === "note") {
     return value;
   }
   throw new Error("Invalid review resolution.");

@@ -28,8 +28,9 @@ export class PgBossWorkflowStepScheduler implements WorkflowStepScheduler {
     const jobId = await this.boss.send(
       jobNames.runDueStep,
       { stepId: input.stepId },
-      { id: input.stepId, singletonKey, startAfter: input.runAt },
+      { singletonKey, startAfter: input.runAt },
     );
-    return jobId ?? input.stepId;
+    if (!jobId) throw new Error("Due-step scheduler did not return a job id.");
+    return jobId;
   }
 }

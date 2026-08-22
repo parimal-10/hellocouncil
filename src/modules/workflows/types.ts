@@ -9,7 +9,8 @@ export type WorkflowActionType =
   | "request_review"
   | "mark_contact_attempt"
   | "schedule_follow_up"
-  | "resolve_blocked_step";
+  | "resolve_blocked_step"
+  | "add_review_note";
 
 export type ContactChannel = "phone" | "sms" | "email" | "portal" | "voice_session";
 
@@ -103,4 +104,9 @@ export type WorkflowAction =
       resolution: "approved" | "edited" | "rejected" | "resolved" | "assigned";
       note: string;
       assignedUserId?: string;
+    }
+  | {
+      type: "add_review_note";
+      reviewRequestId: string;
+      note: string;
     };
