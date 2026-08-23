@@ -72,6 +72,7 @@ export async function executeVoiceWorkflowTool(input: {
     }
   }
 
+  let result: WorkflowActionResult;
   try {
     if (!isVoiceToolName(input.toolName)) {
       throw new VoiceToolPublicError(
@@ -102,9 +103,7 @@ export async function executeVoiceWorkflowTool(input: {
       );
     }
     const engine = new WorkflowEngine({ store, definitions: workflowDefinitions });
-    const result = await routeWorkflowAction({ action, definition, engine });
-    await appendToolEvent(eventContext, result);
-    return result;
+    result = await routeWorkflowAction({ action, definition, engine });
   } catch (error) {
     const safeError = safeVoiceToolError(error);
     try {
@@ -120,6 +119,17 @@ export async function executeVoiceWorkflowTool(input: {
     }
     throw safeError;
   }
+
+  try {
+    await appendToolEvent(eventContext, result);
+  } catch (persistenceError) {
+    throw new AggregateError(
+      [persistenceError],
+      "Voice workflow action completed but its result could not be persisted.",
+    );
+  }
+
+  return result;
 }
 
 async function defaultWorkflowStore() {

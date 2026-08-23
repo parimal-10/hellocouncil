@@ -475,4 +475,43 @@ describe("voice agent tools", () => {
     });
     expect(JSON.stringify(events)).not.toContain("admin:secret");
   });
+
+  it("does not reclassify a successful workflow mutation as failed when result persistence fails", async () => {
+    const store = storeWithRun();
+    const attemptedResults: Array<Record<string, unknown> | undefined> = [];
+    const voiceEventStore: VoiceToolEventStore = {
+      async claimToolCall() {
+        return true;
+      },
+      async getToolCallResult() {
+        return null;
+      },
+      async appendSessionEvent(input) {
+        attemptedResults.push(input.payload);
+        throw new Error("tool result store unavailable");
+      },
+    };
+
+    const error = await executeVoiceWorkflowTool({
+      workflowRunId: "run-1",
+      toolName: "create_update",
+      payload: { summary: "Records are ready." },
+      store,
+      voiceEventStore,
+      voiceSessionId: "voice-1",
+      toolCallId: "tool-success-result-failed",
+    }).catch((caught) => caught);
+
+    expect(store.runs.get("run-1")?.summary).toBe("Records are ready.");
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error).toMatchObject({
+      message: "Voice workflow action completed but its result could not be persisted.",
+    });
+    expect((error as AggregateError).errors).toEqual([
+      expect.objectContaining({ message: "tool result store unavailable" }),
+    ]);
+    expect(attemptedResults).toEqual([
+      { ok: true, message: "Workflow update recorded." },
+    ]);
+  });
 });
