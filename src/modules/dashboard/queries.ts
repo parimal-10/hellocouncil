@@ -10,6 +10,16 @@ type CaseContext = {
 
 type DashboardDatabase = Awaited<ReturnType<typeof loadDashboardDatabase>>;
 
+export function voiceSessionLabel(session: {
+  provider: string;
+  status: string;
+  roomName?: string | null;
+  startedAt: Date;
+}) {
+  const room = session.roomName ? ` - ${session.roomName}` : "";
+  return `${session.provider} - ${session.status}${room}`;
+}
+
 export async function getDashboardData() {
   const database = await loadDashboardDatabase();
   const { db, humanReviewRequests, workflowEvents, workflowRuns, workflowSteps } = database;

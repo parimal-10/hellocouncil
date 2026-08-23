@@ -1,6 +1,6 @@
 import { runSimulatedVoiceSessionAction } from "../actions/voice";
 import { LiveKitVoiceLauncher } from "./livekit-room";
-import { getVoiceConsoleData } from "@/modules/dashboard/queries";
+import { getVoiceConsoleData, voiceSessionLabel } from "@/modules/dashboard/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +11,9 @@ export default async function VoicePage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Voice sessions</h1>
+        <p className="mt-1 text-sm text-muted">
+          Real LiveKit sessions require <code>npm run voice:agent</code> and LiveKit environment variables. Simulated sessions remain a deterministic fallback.
+        </p>
       </div>
 
       <LiveKitVoiceLauncher runs={runs.map((run) => ({ id: run.id, title: run.title, summary: run.summary }))} />
@@ -39,13 +42,13 @@ export default async function VoicePage() {
       <section className="border-t border-line pt-5">
         <h2 className="font-semibold">Recent sessions</h2>
         {sessions.length === 0 ? (
-          <p className="py-3 text-sm text-muted">No simulated sessions have been recorded.</p>
+          <p className="py-3 text-sm text-muted">No voice sessions have been recorded.</p>
         ) : (
           <div className="mt-2 divide-y divide-line">
             {sessions.map((session) => (
               <div key={session.id} className="flex items-center justify-between gap-4 py-2 text-sm">
-                <span className="font-medium">{session.provider}</span>
-                <span className="text-muted">{session.status} - {session.startedAt.toLocaleString()}</span>
+                <span className="font-medium">{voiceSessionLabel(session)}</span>
+                <span className="text-muted">{session.startedAt.toLocaleString()}</span>
               </div>
             ))}
           </div>
@@ -61,7 +64,7 @@ export default async function VoicePage() {
             {events.map(({ event, session }) => (
               <div key={event.id} className="grid gap-1 py-2 text-sm md:grid-cols-[12rem_10rem_1fr]">
                 <span className="font-medium">{event.type}</span>
-                <span className="text-muted">{session.provider} - {session.status}</span>
+                <span className="text-muted">{voiceSessionLabel(session)}</span>
                 <span className="break-words text-muted">{voiceEventSummary(event)}</span>
               </div>
             ))}
