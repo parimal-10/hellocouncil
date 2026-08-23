@@ -113,6 +113,10 @@ export const voiceSessions = pgTable("voice_sessions", {
   workflowRunId: uuid("workflow_run_id").notNull().references(() => workflowRuns.id),
   provider: text("provider").notNull(),
   status: text("status").notNull(),
+  roomName: text("room_name"),
+  participantIdentity: text("participant_identity"),
+  providerSessionId: text("provider_session_id"),
+  endedReason: text("ended_reason"),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
   endedAt: timestamp("ended_at", { withTimezone: true }),
 });
