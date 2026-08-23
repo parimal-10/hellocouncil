@@ -1,4 +1,5 @@
 import "./globals.css";
+import "@livekit/components-styles";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
