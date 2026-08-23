@@ -13,7 +13,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx src/db/seed.ts",
     "worker": "tsx src/worker/start.ts",
-    "voice:agent": "tsx src/voice-agent/start.ts",
+    "voice:agent": "tsx src/voice-agent/start.ts start",
     "voice:agent:dev": "tsx src/voice-agent/start.ts dev"
   },
   "dependencies": {

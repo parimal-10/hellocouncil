@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildAgentInstructions,
@@ -10,6 +12,15 @@ import {
 import type { VoiceToolEventStore } from "@/voice-agent/tools";
 
 describe("voice agent configuration", () => {
+  it("starts the worker in production and development CLI modes", () => {
+    const packageJson = JSON.parse(
+      readFileSync(resolve(process.cwd(), "package.json"), "utf8"),
+    ) as { scripts: Record<string, string> };
+
+    expect(packageJson.scripts["voice:agent"]).toBe("tsx src/voice-agent/start.ts start");
+    expect(packageJson.scripts["voice:agent:dev"]).toBe("tsx src/voice-agent/start.ts dev");
+  });
+
   it("uses explicit LiveKit inference model config", () => {
     expect(
       createAgentModelConfig({
