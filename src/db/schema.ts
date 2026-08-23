@@ -1,4 +1,13 @@
-import { index, integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import {
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
 
 export const people = pgTable("people", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -107,27 +116,48 @@ export const contactAttempts = pgTable("contact_attempts", {
   attemptedAt: timestamp("attempted_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const voiceSessions = pgTable("voice_sessions", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  caseId: uuid("case_id").notNull().references(() => cases.id),
-  workflowRunId: uuid("workflow_run_id").notNull().references(() => workflowRuns.id),
-  provider: text("provider").notNull(),
-  status: text("status").notNull(),
-  roomName: text("room_name"),
-  participantIdentity: text("participant_identity"),
-  providerSessionId: text("provider_session_id"),
-  endedReason: text("ended_reason"),
-  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
-  endedAt: timestamp("ended_at", { withTimezone: true }),
-});
+export const voiceSessions = pgTable(
+  "voice_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    caseId: uuid("case_id").notNull().references(() => cases.id),
+    workflowRunId: uuid("workflow_run_id").notNull().references(() => workflowRuns.id),
+    provider: text("provider").notNull(),
+    status: text("status").notNull(),
+    launchId: text("launch_id"),
+    roomName: text("room_name"),
+    participantIdentity: text("participant_identity"),
+    providerSessionId: text("provider_session_id"),
+    endedReason: text("ended_reason"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+  },
+  (table) => ({
+    launchIdUnique: uniqueIndex("voice_sessions_launch_id_unique").on(table.launchId),
+    roomNameUnique: uniqueIndex("voice_sessions_room_name_unique").on(table.roomName),
+    participantIdentityUnique: uniqueIndex(
+      "voice_sessions_participant_identity_unique",
+    ).on(table.participantIdentity),
+  }),
+);
 
-export const voiceSessionEvents = pgTable("voice_session_events", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  voiceSessionId: uuid("voice_session_id").notNull().references(() => voiceSessions.id),
-  type: text("type").notNull(),
-  speaker: text("speaker"),
-  text: text("text"),
-  toolCallId: text("tool_call_id"),
-  payload: jsonb("payload").notNull().default({}),
-  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const voiceSessionEvents = pgTable(
+  "voice_session_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    voiceSessionId: uuid("voice_session_id").notNull().references(() => voiceSessions.id),
+    type: text("type").notNull(),
+    speaker: text("speaker"),
+    text: text("text"),
+    toolCallId: text("tool_call_id"),
+    payload: jsonb("payload").notNull().default({}),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    toolCallUnique: uniqueIndex("voice_session_events_tool_call_unique").on(
+      table.voiceSessionId,
+      table.toolCallId,
+      table.type,
+    ),
+  }),
+);

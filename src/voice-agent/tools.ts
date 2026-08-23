@@ -14,7 +14,23 @@ export const voiceToolNames = [
 ] as const;
 
 export type VoiceToolName = (typeof voiceToolNames)[number];
-export type VoiceToolEventStore = Pick<VoiceSessionPersistence, "appendSessionEvent">;
+export type VoiceToolEventStore = Pick<VoiceSessionPersistence, "appendSessionEvent"> & {
+  claimToolCall(input: {
+    voiceSessionId: string;
+    toolCallId: string;
+    toolName: string;
+    payload: unknown;
+    occurredAt: Date;
+  }): Promise<boolean>;
+  getToolCallResult(
+    voiceSessionId: string,
+    toolCallId: string,
+  ): Promise<Record<string, unknown> | null>;
+};
+
+class VoiceToolPublicError extends Error {}
+
+const safeInfrastructureMessage = "The voice workflow tool could not be completed.";
 
 export async function executeVoiceWorkflowTool(input: {
   workflowRunId: string;
@@ -25,53 +41,85 @@ export async function executeVoiceWorkflowTool(input: {
   voiceSessionId?: string;
   toolCallId?: string;
 }): Promise<WorkflowActionResult> {
-  if (!isVoiceToolName(input.toolName)) {
-    throw new Error(`Tool ${input.toolName} is not allowed for voice agents.`);
+  const eventContext = voiceEventContext(input);
+  if (eventContext) {
+    let claimed: boolean;
+    try {
+      claimed = await eventContext.store.claimToolCall({
+        voiceSessionId: eventContext.voiceSessionId,
+        toolCallId: eventContext.toolCallId,
+        toolName: input.toolName,
+        payload: input.payload,
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      throw safeInfrastructureError(error);
+    }
+    if (!claimed) {
+      let persistedResult: Record<string, unknown> | null;
+      try {
+        persistedResult = await eventContext.store.getToolCallResult(
+          eventContext.voiceSessionId,
+          eventContext.toolCallId,
+        );
+      } catch (error) {
+        throw safeInfrastructureError(error);
+      }
+      return workflowActionResult(persistedResult) ?? {
+        ok: false,
+        message: "This voice tool call is already being processed.",
+      };
+    }
   }
 
-  const workflowRunId = requiredString(input.workflowRunId, "workflowRunId");
-  const eventContext = voiceEventContext(input);
-
-  await appendToolEvent(eventContext, "tool_call", {
-    toolName: input.toolName,
-    payload: input.payload,
-  });
-
-  let result: WorkflowActionResult;
   try {
+    if (!isVoiceToolName(input.toolName)) {
+      throw new VoiceToolPublicError(
+        `Tool ${input.toolName} is not allowed for voice agents.`,
+      );
+    }
+
+    const workflowRunId = requiredString(input.workflowRunId, "workflowRunId");
     const action = toWorkflowAction(workflowRunId, input.toolName, input.payload);
     const store = input.store ?? await defaultWorkflowStore();
     const run = await store.getRun(workflowRunId);
     if (action.type === "add_review_note") {
       const review = await store.getReview(action.reviewRequestId);
       if (review.workflowRunId !== workflowRunId) {
-        throw new Error(`Review ${review.id} does not belong to workflow run ${workflowRunId}.`);
+        throw new VoiceToolPublicError(
+          `Review ${review.id} does not belong to workflow run ${workflowRunId}.`,
+        );
+      }
+      if (review.status !== "open" && review.status !== "assigned") {
+        throw new VoiceToolPublicError(`Review ${review.id} is not open or assigned.`);
       }
     }
 
     const definition = getWorkflowDefinition(run.definitionId);
     if (action.type === "schedule_follow_up" && !definition.stepTemplates.some((step) => step.type === action.stepType)) {
-      throw new Error(`Step type ${action.stepType} is not defined for workflow ${definition.id}.`);
+      throw new VoiceToolPublicError(
+        `Step type ${action.stepType} is not defined for workflow ${definition.id}.`,
+      );
     }
     const engine = new WorkflowEngine({ store, definitions: workflowDefinitions });
-    result = await routeWorkflowAction({ action, definition, engine });
+    const result = await routeWorkflowAction({ action, definition, engine });
+    await appendToolEvent(eventContext, result);
+    return result;
   } catch (error) {
+    const safeError = safeVoiceToolError(error);
     try {
-      await appendToolEvent(eventContext, "tool_result", {
+      await appendToolEvent(eventContext, {
         ok: false,
-        message: errorMessage(error),
+        message: safeError.message,
       });
     } catch (persistenceError) {
       throw new AggregateError(
-        [error, persistenceError],
-        "Voice tool execution failed and its result could not be persisted.",
+        [safeError, persistenceError],
+        "Voice tool execution failed and its safe result could not be persisted.",
       );
     }
-    throw error;
+    throw safeError;
   }
-
-  await appendToolEvent(eventContext, "tool_result", result);
-  return result;
 }
 
 async function defaultWorkflowStore() {
@@ -134,7 +182,7 @@ function toWorkflowAction(workflowRunId: string, toolName: VoiceToolName, payloa
 
 function objectPayload(payload: unknown): Record<string, unknown> {
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
-    throw new Error("Tool payload must be an object.");
+    throw new VoiceToolPublicError("Tool payload must be an object.");
   }
   return payload as Record<string, unknown>;
 }
@@ -145,7 +193,7 @@ function stringField(payload: Record<string, unknown>, key: string) {
 
 function requiredString(value: unknown, key: string) {
   if (typeof value !== "string" || !value.trim()) {
-    throw new Error(`${key} is required.`);
+    throw new VoiceToolPublicError(`${key} is required.`);
   }
   return value.trim();
 }
@@ -162,7 +210,7 @@ function reviewReasonField(payload: Record<string, unknown>, key: string): Revie
   if (supportedReasons.includes(value as ReviewBlockReason)) {
     return value as ReviewBlockReason;
   }
-  throw new Error(`${key} is not a supported review reason.`);
+  throw new VoiceToolPublicError(`${key} is not a supported review reason.`);
 }
 
 function contactOutcomeField(payload: Record<string, unknown>, key: string) {
@@ -170,14 +218,14 @@ function contactOutcomeField(payload: Record<string, unknown>, key: string) {
   if (value === "reached" || value === "left_message" || value === "failed" || value === "refused") {
     return value;
   }
-  throw new Error(`${key} is not a supported contact outcome.`);
+  throw new VoiceToolPublicError(`${key} is not a supported contact outcome.`);
 }
 
 function dateField(payload: Record<string, unknown>, key: string) {
   const value = stringField(payload, key);
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
-    throw new Error(`${key} must be a valid date.`);
+    throw new VoiceToolPublicError(`${key} must be a valid date.`);
   }
   return date;
 }
@@ -204,19 +252,33 @@ function voiceEventContext(input: {
 
 async function appendToolEvent(
   context: ReturnType<typeof voiceEventContext>,
-  type: "tool_call" | "tool_result",
   payload: Record<string, unknown>,
 ) {
   if (!context) return;
   await context.store.appendSessionEvent({
     voiceSessionId: context.voiceSessionId,
-    type,
+    type: "tool_result",
     toolCallId: context.toolCallId,
     payload,
     occurredAt: new Date(),
   });
 }
 
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Unknown voice tool error.";
+function safeVoiceToolError(error: unknown) {
+  return error instanceof VoiceToolPublicError ? error : safeInfrastructureError(error);
+}
+
+function safeInfrastructureError(error: unknown) {
+  return new Error(safeInfrastructureMessage, { cause: error });
+}
+
+function workflowActionResult(payload: Record<string, unknown> | null) {
+  if (
+    payload &&
+    typeof payload.ok === "boolean" &&
+    typeof payload.message === "string"
+  ) {
+    return { ok: payload.ok, message: payload.message };
+  }
+  return null;
 }

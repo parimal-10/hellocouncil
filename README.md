@@ -60,6 +60,13 @@ npm run dev
 npm run voice:agent
 ```
 
+Apply migrations before starting either process. Each browser launch now creates a unique
+LiveKit room and participant identity, and the explicit dispatch carries the persisted voice
+session id used by the worker before it connects. The worker records `session.started`,
+participant connection, transcript chunks, conversation messages, errors, and a final
+completed/failed event with an ended reason. Repeated SDK tool callbacks are claimed by voice
+session and tool-call id before workflow mutation.
+
 LiveKit Cloud end-to-end verification requires those credentials and is a manual step: launch a session from `/voice`, permit browser microphone access, and confirm the agent worker joins the room. It is not covered by automated tests.
 
 ## Verification

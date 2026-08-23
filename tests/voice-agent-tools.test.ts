@@ -39,9 +39,30 @@ function addOpenReview(store: TestWorkflowStore, workflowRunId = "run-1") {
 
 function recordingEventStore() {
   const events: Array<Record<string, unknown>> = [];
+  const claimed = new Set<string>();
+  const results = new Map<string, Record<string, unknown>>();
   const store: VoiceToolEventStore = {
     async appendSessionEvent(input) {
       events.push(input);
+      if (input.type === "tool_result" && input.toolCallId) {
+        results.set(`${input.voiceSessionId}:${input.toolCallId}`, input.payload ?? {});
+      }
+    },
+    async claimToolCall(input) {
+      const key = `${input.voiceSessionId}:${input.toolCallId}`;
+      if (claimed.has(key)) return false;
+      claimed.add(key);
+      events.push({
+        voiceSessionId: input.voiceSessionId,
+        type: "tool_call",
+        toolCallId: input.toolCallId,
+        payload: { toolName: input.toolName, payload: input.payload },
+        occurredAt: input.occurredAt,
+      });
+      return true;
+    },
+    async getToolCallResult(voiceSessionId, toolCallId) {
+      return results.get(`${voiceSessionId}:${toolCallId}`) ?? null;
     },
   };
   return { events, store };
@@ -72,6 +93,37 @@ describe("voice agent tools", () => {
     ).rejects.toThrow("Tool resolve_blocked_step is not allowed for voice agents.");
 
     expect(getRun).not.toHaveBeenCalled();
+  });
+
+  it("audits a disallowed tool attempt when full voice event context exists", async () => {
+    const store = storeWithRun();
+    const { events, store: voiceEventStore } = recordingEventStore();
+
+    await expect(
+      executeVoiceWorkflowTool({
+        workflowRunId: "run-1",
+        toolName: "resolve_blocked_step",
+        payload: {},
+        store,
+        voiceEventStore,
+        voiceSessionId: "voice-1",
+        toolCallId: "tool-disallowed",
+      }),
+    ).rejects.toThrow("Tool resolve_blocked_step is not allowed for voice agents.");
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "tool_call",
+        payload: { toolName: "resolve_blocked_step", payload: {} },
+      }),
+      expect.objectContaining({
+        type: "tool_result",
+        payload: {
+          ok: false,
+          message: "Tool resolve_blocked_step is not allowed for voice agents.",
+        },
+      }),
+    ]);
   });
 
   it("routes create_update through the workflow engine as a voice action", async () => {
@@ -270,6 +322,35 @@ describe("voice agent tools", () => {
     ]);
   });
 
+  it("returns the persisted result without repeating a workflow mutation for a duplicate tool call id", async () => {
+    const store = storeWithRun();
+    const routeWorkflowAction = vi.spyOn(actionRouter, "routeWorkflowAction");
+    const { events, store: voiceEventStore } = recordingEventStore();
+    const input = {
+      workflowRunId: "run-1",
+      toolName: "create_update",
+      payload: { summary: "Records are ready." },
+      store,
+      voiceEventStore,
+      voiceSessionId: "voice-1",
+      toolCallId: "tool-repeat",
+    };
+
+    await expect(executeVoiceWorkflowTool(input)).resolves.toEqual({
+      ok: true,
+      message: "Workflow update recorded.",
+    });
+    await expect(executeVoiceWorkflowTool(input)).resolves.toEqual({
+      ok: true,
+      message: "Workflow update recorded.",
+    });
+
+    expect(routeWorkflowAction).toHaveBeenCalledTimes(1);
+    expect(events.filter((event) => event.type === "tool_call")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "tool_result")).toHaveLength(1);
+    routeWorkflowAction.mockRestore();
+  });
+
   it("rejects an undefined follow-up step before routing to the workflow engine", async () => {
     const store = storeWithRun();
     const { events, store: voiceEventStore } = recordingEventStore();
@@ -337,6 +418,13 @@ describe("voice agent tools", () => {
     const store = storeWithRun();
     let eventWriteCount = 0;
     const voiceEventStore: VoiceToolEventStore = {
+      async claimToolCall() {
+        eventWriteCount += 1;
+        return true;
+      },
+      async getToolCallResult() {
+        return null;
+      },
       async appendSessionEvent() {
         eventWriteCount += 1;
         if (eventWriteCount === 2) throw new Error("voice event store unavailable");
@@ -358,5 +446,33 @@ describe("voice agent tools", () => {
       expect.objectContaining({ message: "summary is required." }),
       expect.objectContaining({ message: "voice event store unavailable" }),
     ]);
+  });
+
+  it("does not persist or return raw infrastructure errors", async () => {
+    const store = storeWithRun();
+    vi.spyOn(store, "getRun").mockRejectedValue(
+      new Error("postgres://admin:secret@db/internal relation workflow_runs missing"),
+    );
+    const { events, store: voiceEventStore } = recordingEventStore();
+
+    const error = await executeVoiceWorkflowTool({
+      workflowRunId: "run-1",
+      toolName: "create_update",
+      payload: { summary: "Records are ready." },
+      store,
+      voiceEventStore,
+      voiceSessionId: "voice-1",
+      toolCallId: "tool-infrastructure",
+    }).catch((caught) => caught);
+
+    expect(error).toMatchObject({
+      message: "The voice workflow tool could not be completed.",
+      cause: expect.objectContaining({ message: expect.stringContaining("admin:secret") }),
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: "tool_result",
+      payload: { ok: false, message: "The voice workflow tool could not be completed." },
+    });
+    expect(JSON.stringify(events)).not.toContain("admin:secret");
   });
 });

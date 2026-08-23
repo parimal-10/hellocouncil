@@ -11,11 +11,15 @@ import {
 import * as silero from "@livekit/agents-plugin-silero";
 import { z } from "zod";
 import { getLiveKitConfig, type LiveKitConfig } from "@/modules/livekit/config";
+import { parseLiveKitDispatchMetadata } from "@/modules/livekit/token";
+import { getWorkflowDefinition } from "@/modules/workflows/definitions";
+import type { WorkflowStore } from "@/modules/workflows/store";
 import {
   executeVoiceWorkflowTool,
   type VoiceToolEventStore,
   type VoiceToolName,
 } from "./tools";
+import { LiveKitVoiceSessionLifecycle } from "./lifecycle";
 
 export type AgentModelConfig = Pick<
   LiveKitConfig,
@@ -37,16 +41,21 @@ export function buildAgentInstructions() {
 }
 
 export type VoiceSessionLookup = VoiceToolEventStore & {
-  getLiveKitSessionByRoomName(roomName: string): Promise<{
+  getLiveKitSessionById(voiceSessionId: string): Promise<{
     id: string;
+    launchId: string;
     workflowRunId: string;
     caseId: string;
+    roomName: string;
+    participantIdentity: string;
+    status: string;
   } | null>;
 };
 
 export type VoiceWorkflowContext = {
   workflowRunId: string;
   voiceSessionId: string;
+  participantIdentity: string;
   voiceEventStore: VoiceToolEventStore;
 };
 
@@ -56,18 +65,44 @@ export function requireLiveKitRoomName(roomName: string | undefined) {
 }
 
 export async function resolveVoiceWorkflowContext(
-  roomName: string,
-  store: VoiceSessionLookup,
+  input: {
+    dispatchMetadata: string;
+    roomName: string;
+    voiceStore: VoiceSessionLookup;
+    workflowStore: Pick<WorkflowStore, "getRun">;
+    getDefinition?: typeof getWorkflowDefinition;
+  },
 ): Promise<VoiceWorkflowContext> {
-  const voiceSession = await store.getLiveKitSessionByRoomName(roomName);
-  if (!voiceSession) {
-    throw new Error(`No persisted LiveKit voice session found for room ${roomName}.`);
+  const metadata = parseLiveKitDispatchMetadata(input.dispatchMetadata);
+  if (metadata.roomName !== input.roomName) {
+    throw new Error("LiveKit dispatch metadata does not match the assigned room.");
   }
+
+  const voiceSession = await input.voiceStore.getLiveKitSessionById(metadata.voiceSessionId);
+  if (!voiceSession) {
+    throw new Error(
+      `No persisted LiveKit voice session found for id ${metadata.voiceSessionId}.`,
+    );
+  }
+  if (
+    voiceSession.launchId !== metadata.launchId ||
+    voiceSession.roomName !== metadata.roomName ||
+    voiceSession.status !== "pending"
+  ) {
+    throw new Error("LiveKit dispatch metadata does not match a pending persisted launch.");
+  }
+
+  const run = await input.workflowStore.getRun(voiceSession.workflowRunId);
+  if (run.caseId !== voiceSession.caseId) {
+    throw new Error("LiveKit voice session does not match its persisted workflow run.");
+  }
+  (input.getDefinition ?? getWorkflowDefinition)(run.definitionId);
 
   return {
     workflowRunId: voiceSession.workflowRunId,
     voiceSessionId: voiceSession.id,
-    voiceEventStore: store,
+    participantIdentity: voiceSession.participantIdentity,
+    voiceEventStore: input.voiceStore,
   };
 }
 
@@ -153,52 +188,129 @@ export function createLiveKitAgent() {
     entry: async (ctx) => {
       const config = getLiveKitConfig();
       const modelConfig = createAgentModelConfig(config);
-
-      await ctx.connect();
-
-      const livekit = await import("@livekit/agents-plugin-livekit");
-      const { DrizzleVoiceSessionStore } = await import("@/modules/voice/store");
-      const voiceEventStore = new DrizzleVoiceSessionStore();
-      const roomName = requireLiveKitRoomName(ctx.room.name);
-      const workflowContext = await resolveVoiceWorkflowContext(roomName, voiceEventStore);
+      const [livekit, { DrizzleVoiceSessionStore }, { DrizzleWorkflowStore }] =
+        await Promise.all([
+          import("@livekit/agents-plugin-livekit"),
+          import("@/modules/voice/store"),
+          import("@/modules/workflows/store"),
+        ]);
+      const voiceStore = new DrizzleVoiceSessionStore();
+      const roomName = requireLiveKitRoomName(ctx.job.room?.name ?? ctx.room.name);
+      const workflowContext = await resolveVoiceWorkflowContext({
+        dispatchMetadata: ctx.job.metadata,
+        roomName,
+        voiceStore,
+        workflowStore: new DrizzleWorkflowStore(),
+      });
+      const lifecycle = new LiveKitVoiceSessionLifecycle(
+        workflowContext.voiceSessionId,
+        voiceStore,
+      );
       const workflowTools = createWorkflowTools(workflowContext);
       const inferenceCredentials = {
         apiKey: config.inferenceApiKey,
         apiSecret: config.apiSecret,
       };
-      const agent = new voice.Agent({
-        instructions: buildAgentInstructions(),
-        tools: Object.values(workflowTools),
-      });
-      const session = new voice.AgentSession({
-        stt: new inference.STT({
-          model: modelConfig.sttModel,
-          language: "en",
-          ...inferenceCredentials,
-        }),
-        llm: new inference.LLM({
-          model: modelConfig.llmModel,
-          ...inferenceCredentials,
-        }),
-        tts: new inference.TTS({
-          model: modelConfig.ttsModel,
-          voice: modelConfig.ttsVoice,
-          ...inferenceCredentials,
-        }),
-        vad: ctx.proc.userData.vad,
-        turnHandling: {
-          turnDetection: new livekit.turnDetector.MultilingualModel(),
-        },
-      });
+      ctx.addShutdownCallback(() => lifecycle.complete("job_shutdown"));
 
-      await session.start({ agent, room: ctx.room });
-      await session.generateReply({
-        instructions: "Greet the user and ask what workflow update they want to record.",
-      });
+      try {
+        await ctx.connect();
+        await lifecycle.start();
+        const participant = await ctx.waitForParticipant(
+          workflowContext.participantIdentity,
+        );
+        await lifecycle.participantConnected(participant.identity);
+
+        const agent = new voice.Agent({
+          instructions: buildAgentInstructions(),
+          tools: Object.values(workflowTools),
+        });
+        const session = new voice.AgentSession({
+          stt: new inference.STT({
+            model: modelConfig.sttModel,
+            language: "en",
+            ...inferenceCredentials,
+          }),
+          llm: new inference.LLM({
+            model: modelConfig.llmModel,
+            ...inferenceCredentials,
+          }),
+          tts: new inference.TTS({
+            model: modelConfig.ttsModel,
+            voice: modelConfig.ttsVoice,
+            ...inferenceCredentials,
+          }),
+          vad: ctx.proc.userData.vad,
+          turnHandling: {
+            turnDetection: new livekit.turnDetector.MultilingualModel(),
+          },
+        });
+        const persist = (operation: Promise<void>) => {
+          void operation.catch(async (error) => {
+            console.error(
+              `LiveKit voice session ${workflowContext.voiceSessionId} persistence failed.`,
+              error,
+            );
+            try {
+              await lifecycle.fail("persistence_error");
+            } catch (finalizationError) {
+              console.error(
+                `LiveKit voice session ${workflowContext.voiceSessionId} failed finalization.`,
+                finalizationError,
+              );
+            }
+            ctx.shutdown("persistence_error");
+          });
+        };
+        session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (event) => {
+          persist(lifecycle.userInputTranscribed(event));
+        });
+        session.on(voice.AgentSessionEventTypes.ConversationItemAdded, (event) => {
+          persist(lifecycle.conversationItemAdded(event));
+        });
+        session.on(voice.AgentSessionEventTypes.Error, (event) => {
+          persist(lifecycle.sessionError(event));
+        });
+        session.on(voice.AgentSessionEventTypes.Close, (event) => {
+          persist(lifecycle.close(event));
+        });
+
+        await session.start({
+          agent,
+          room: ctx.room,
+          inputOptions: {
+            participantIdentity: workflowContext.participantIdentity,
+            closeOnDisconnect: true,
+          },
+        });
+        await session.generateReply({
+          instructions: "Greet the user and ask what workflow update they want to record.",
+        });
+      } catch (error) {
+        try {
+          await lifecycle.fail("worker_error");
+        } catch (persistenceError) {
+          throw new AggregateError(
+            [error, persistenceError],
+            "LiveKit voice agent failed and session finalization was unsuccessful.",
+          );
+        }
+        throw error;
+      }
     },
   });
 }
 
+export function createVoiceAgentServerOptions(agentFile: string, config: LiveKitConfig) {
+  return new ServerOptions({
+    agent: agentFile,
+    agentName: config.agentName,
+    wsURL: config.url,
+    apiKey: config.apiKey,
+    apiSecret: config.apiSecret,
+  });
+}
+
 export function runVoiceAgentCli(agentFile: string) {
-  cli.runApp(new ServerOptions({ agent: agentFile }));
+  cli.runApp(createVoiceAgentServerOptions(agentFile, getLiveKitConfig()));
 }

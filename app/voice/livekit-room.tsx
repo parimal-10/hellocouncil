@@ -23,23 +23,7 @@ export function LiveKitVoiceLauncher({ runs }: { runs: Array<{ id: string; title
   }
 
   if (launch) {
-    return (
-      <section className="rounded border border-line bg-white p-4">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <div>
-            <h2 className="font-semibold">Live voice session</h2>
-            <p className="text-sm text-muted">{launch.roomName}</p>
-          </div>
-          <button className="rounded border border-line px-3 py-2 text-sm" type="button" onClick={() => setLaunch(null)}>
-            <PhoneOff className="inline-block" size={16} /> End view
-          </button>
-        </div>
-        <LiveKitRoom token={launch.token} serverUrl={launch.livekitUrl} connect audio>
-          <RoomAudioRenderer />
-          <p className="text-sm text-muted">Connected with microphone enabled. Speak to the LiveKit agent worker.</p>
-        </LiveKitRoom>
-      </section>
-    );
+    return <LiveKitActiveRoom launch={launch} onEnd={() => setLaunch(null)} />;
   }
 
   return (
@@ -65,4 +49,64 @@ export function LiveKitVoiceLauncher({ runs }: { runs: Array<{ id: string; title
       </div>
     </section>
   );
+}
+
+type LiveKitRoomState =
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "connection_error"
+  | "microphone_error";
+
+export function LiveKitActiveRoom({
+  launch,
+  onEnd,
+}: {
+  launch: BrowserVoiceSessionLaunch;
+  onEnd: () => void;
+}) {
+  const [roomState, setRoomState] = useState<LiveKitRoomState>("connecting");
+
+  return (
+    <section className="rounded border border-line bg-white p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="font-semibold">Live voice session</h2>
+          <p className="text-sm text-muted">{launch.roomName}</p>
+        </div>
+        <button
+          className="rounded border border-line px-3 py-2 text-sm"
+          type="button"
+          onClick={onEnd}
+        >
+          <PhoneOff className="inline-block" size={16} /> End view
+        </button>
+      </div>
+      <LiveKitRoom
+        token={launch.token}
+        serverUrl={launch.livekitUrl}
+        connect
+        audio
+        onConnected={() => setRoomState("connected")}
+        onDisconnected={() => setRoomState("disconnected")}
+        onError={() => setRoomState("connection_error")}
+        onMediaDeviceFailure={() => setRoomState("microphone_error")}
+      >
+        <RoomAudioRenderer />
+        <p className="text-sm text-muted" role="status">
+          {roomStatusMessage(roomState)}
+        </p>
+      </LiveKitRoom>
+    </section>
+  );
+}
+
+function roomStatusMessage(state: LiveKitRoomState) {
+  if (state === "connected") return "Connected with microphone enabled.";
+  if (state === "disconnected") return "Disconnected from LiveKit.";
+  if (state === "connection_error") return "Unable to connect to the LiveKit room.";
+  if (state === "microphone_error") {
+    return "Microphone unavailable. Check browser permissions and input device.";
+  }
+  return "Connecting to LiveKit...";
 }
