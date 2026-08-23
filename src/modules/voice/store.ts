@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db, type DbClient } from "@/db/client";
 import { voiceSessionEvents, voiceSessions } from "@/db/schema";
 import type { VoiceSessionPersistence } from "./session-runner";
@@ -51,6 +51,7 @@ export class DrizzleVoiceSessionStore implements VoiceSessionPersistence {
       })
       .from(voiceSessions)
       .where(and(eq(voiceSessions.provider, "livekit"), eq(voiceSessions.roomName, roomName)))
+      .orderBy(desc(voiceSessions.startedAt), desc(voiceSessions.id))
       .limit(1);
     return session ?? null;
   }

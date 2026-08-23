@@ -50,10 +50,14 @@ describe("DrizzleVoiceSessionStore LiveKit sessions", () => {
     ]);
   });
 
-  it("finds a LiveKit session by room for runtime event persistence", async () => {
+  it("finds the latest LiveKit session when repeated launches reuse a room", async () => {
     let where: SQL | undefined;
+    let ordering: SQL[] = [];
     let limit: number | undefined;
-    const rows = [{ id: "voice-session-1", workflowRunId: "run-1", caseId: "case-1" }];
+    const rows = [
+      { id: "voice-session-older", workflowRunId: "run-1", caseId: "case-1" },
+      { id: "voice-session-latest", workflowRunId: "run-1", caseId: "case-1" },
+    ];
     const client = {
       select() {
         return {
@@ -62,9 +66,18 @@ describe("DrizzleVoiceSessionStore LiveKit sessions", () => {
               where(condition: SQL) {
                 where = condition;
                 return {
+                  orderBy(...conditions: SQL[]) {
+                    ordering = conditions;
+                    return {
+                      async limit(value: number) {
+                        limit = value;
+                        return [rows[1]];
+                      },
+                    };
+                  },
                   async limit(value: number) {
                     limit = value;
-                    return rows;
+                    return [rows[0]];
                   },
                 };
               },
@@ -75,8 +88,12 @@ describe("DrizzleVoiceSessionStore LiveKit sessions", () => {
     } as unknown as DbClient;
     const store = new DrizzleVoiceSessionStore(client);
 
-    await expect(store.getLiveKitSessionByRoomName("workflow-run-1")).resolves.toEqual(rows[0]);
+    await expect(store.getLiveKitSessionByRoomName("workflow-run-1")).resolves.toEqual(rows[1]);
     expect(limit).toBe(1);
     expect(new PgDialect().sqlToQuery(where as SQL).params).toEqual(["livekit", "workflow-run-1"]);
+    expect(ordering.map((condition) => new PgDialect().sqlToQuery(condition).sql)).toEqual([
+      '"voice_sessions"."started_at" desc',
+      '"voice_sessions"."id" desc',
+    ]);
   });
 });
