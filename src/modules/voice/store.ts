@@ -1,7 +1,13 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db, type DbClient } from "@/db/client";
 import { voiceSessionEvents, voiceSessions } from "@/db/schema";
 import type { VoiceSessionPersistence } from "./session-runner";
+
+export type LiveKitSessionRecord = {
+  id: string;
+  workflowRunId: string;
+  caseId: string;
+};
 
 export class DrizzleVoiceSessionStore implements VoiceSessionPersistence {
   constructor(private readonly client: DbClient = db) {}
@@ -12,6 +18,41 @@ export class DrizzleVoiceSessionStore implements VoiceSessionPersistence {
       .values({ ...input, status: "running" })
       .returning({ id: voiceSessions.id });
     return session.id;
+  }
+
+  async createLiveKitSession(input: {
+    caseId: string;
+    workflowRunId: string;
+    roomName: string;
+    participantIdentity: string;
+    providerSessionId?: string;
+  }) {
+    const [session] = await this.client
+      .insert(voiceSessions)
+      .values({
+        caseId: input.caseId,
+        workflowRunId: input.workflowRunId,
+        provider: "livekit",
+        status: "pending",
+        roomName: input.roomName,
+        participantIdentity: input.participantIdentity,
+        providerSessionId: input.providerSessionId,
+      })
+      .returning({ id: voiceSessions.id });
+    return session.id;
+  }
+
+  async getLiveKitSessionByRoomName(roomName: string): Promise<LiveKitSessionRecord | null> {
+    const [session] = await this.client
+      .select({
+        id: voiceSessions.id,
+        workflowRunId: voiceSessions.workflowRunId,
+        caseId: voiceSessions.caseId,
+      })
+      .from(voiceSessions)
+      .where(and(eq(voiceSessions.provider, "livekit"), eq(voiceSessions.roomName, roomName)))
+      .limit(1);
+    return session ?? null;
   }
 
   async appendSessionEvent(input: {
