@@ -50,6 +50,31 @@ describe("DrizzleVoiceSessionStore LiveKit sessions", () => {
     ]);
   });
 
+  it("updates the provider session id after LiveKit dispatch", async () => {
+    let values: unknown;
+    let where: SQL | undefined;
+    const client = {
+      update() {
+        return {
+          set(value: unknown) {
+            values = value;
+            return {
+              async where(condition: SQL) {
+                where = condition;
+              },
+            };
+          },
+        };
+      },
+    } as unknown as DbClient;
+    const store = new DrizzleVoiceSessionStore(client);
+
+    await store.updateLiveKitSessionProviderSessionId("voice-session-1", "dispatch-1");
+
+    expect(values).toEqual({ providerSessionId: "dispatch-1" });
+    expect(new PgDialect().sqlToQuery(where as SQL).params).toEqual(["voice-session-1"]);
+  });
+
   it("finds the latest LiveKit session when repeated launches reuse a room", async () => {
     let where: SQL | undefined;
     let ordering: SQL[] = [];

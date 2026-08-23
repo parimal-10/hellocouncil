@@ -42,6 +42,13 @@ export class DrizzleVoiceSessionStore implements VoiceSessionPersistence {
     return session.id;
   }
 
+  async updateLiveKitSessionProviderSessionId(voiceSessionId: string, providerSessionId: string) {
+    await this.client
+      .update(voiceSessions)
+      .set({ providerSessionId })
+      .where(eq(voiceSessions.id, voiceSessionId));
+  }
+
   async getLiveKitSessionByRoomName(roomName: string): Promise<LiveKitSessionRecord | null> {
     const [session] = await this.client
       .select({

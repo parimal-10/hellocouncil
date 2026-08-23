@@ -10,6 +10,10 @@ export type LiveKitTokenStore = {
     participantIdentity: string;
     providerSessionId?: string;
   }): Promise<string>;
+  updateLiveKitSessionProviderSessionId(
+    voiceSessionId: string,
+    providerSessionId: string,
+  ): Promise<void>;
 };
 
 export type LiveKitAgentDispatcher = {
@@ -51,15 +55,15 @@ export async function createBrowserVoiceSessionLaunch(input: {
     canPublishData: true,
   });
   const dispatcher = input.dispatcher ?? createLiveKitAgentDispatcher(input.config);
-  const dispatch = await dispatcher.createDispatch(roomName, input.config.agentName);
 
-  await input.store.createLiveKitSession({
+  const voiceSessionId = await input.store.createLiveKitSession({
     caseId: input.caseId,
     workflowRunId: input.workflowRunId,
     roomName,
     participantIdentity,
-    providerSessionId: dispatch.id,
   });
+  const dispatch = await dispatcher.createDispatch(roomName, input.config.agentName);
+  await input.store.updateLiveKitSessionProviderSessionId(voiceSessionId, dispatch.id);
 
   return {
     roomName,
