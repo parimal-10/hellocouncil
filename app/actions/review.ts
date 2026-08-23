@@ -19,7 +19,7 @@ export async function resolveReviewAction(formData: FormData) {
   });
 
   if (resolution === "note") {
-    await engine.applyAction({ type: "add_review_note", reviewRequestId, note });
+    await engine.applyAction({ type: "add_review_note", reviewRequestId, note, source: "reviewer" });
   } else {
     await engine.applyAction({
       type: "resolve_blocked_step",

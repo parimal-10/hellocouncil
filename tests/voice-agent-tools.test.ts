@@ -4,6 +4,7 @@ import {
   voiceToolNames,
   type VoiceToolEventStore,
 } from "@/voice-agent/tools";
+import * as actionRouter from "@/modules/workflows/action-router";
 import type { WorkflowRunRecord } from "@/modules/workflows/store";
 import { TestWorkflowStore } from "./test-store";
 
@@ -177,6 +178,7 @@ describe("voice agent tools", () => {
         workflowRunId: "run-1",
         type: "review.note_added",
         summary: "Waiting for the signed authorization.",
+        actorType: "voice_agent",
       }),
     );
   });
@@ -268,9 +270,10 @@ describe("voice agent tools", () => {
     ]);
   });
 
-  it("persists an explicit failed tool_result when execution fails", async () => {
+  it("rejects an undefined follow-up step before routing to the workflow engine", async () => {
     const store = storeWithRun();
     const { events, store: voiceEventStore } = recordingEventStore();
+    const routeWorkflowAction = vi.spyOn(actionRouter, "routeWorkflowAction");
 
     await expect(
       executeVoiceWorkflowTool({
@@ -288,6 +291,7 @@ describe("voice agent tools", () => {
       }),
     ).rejects.toThrow("Step type not-a-real-step is not defined");
 
+    expect(routeWorkflowAction).not.toHaveBeenCalled();
     expect(events.at(-1)).toMatchObject({
       type: "tool_result",
       toolCallId: "tool-2",
@@ -296,6 +300,7 @@ describe("voice agent tools", () => {
         message: "Step type not-a-real-step is not defined for workflow medical-records-follow-up.",
       },
     });
+    routeWorkflowAction.mockRestore();
   });
 
   it("persists an invalid allowed tool call without reading workflow state", async () => {
@@ -325,6 +330,33 @@ describe("voice agent tools", () => {
         type: "tool_result",
         payload: { ok: false, message: "summary is required." },
       }),
+    ]);
+  });
+
+  it("preserves the execution error when failed-result persistence also fails", async () => {
+    const store = storeWithRun();
+    let eventWriteCount = 0;
+    const voiceEventStore: VoiceToolEventStore = {
+      async appendSessionEvent() {
+        eventWriteCount += 1;
+        if (eventWriteCount === 2) throw new Error("voice event store unavailable");
+      },
+    };
+
+    const error = await executeVoiceWorkflowTool({
+      workflowRunId: "run-1",
+      toolName: "create_update",
+      payload: {},
+      store,
+      voiceEventStore,
+      voiceSessionId: "voice-1",
+      toolCallId: "tool-4",
+    }).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual([
+      expect.objectContaining({ message: "summary is required." }),
+      expect.objectContaining({ message: "voice event store unavailable" }),
     ]);
   });
 });

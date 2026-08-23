@@ -243,6 +243,7 @@ describe("review actions", () => {
       type: "add_review_note",
       reviewRequestId: "review-1",
       note: "Waiting for the signed form from the client.",
+      source: "reviewer",
     });
 
     expect(store.reviews[0]?.status).toBe("open");
@@ -253,6 +254,7 @@ describe("review actions", () => {
         workflowRunId: "run-1",
         type: "review.note_added",
         summary: "Waiting for the signed form from the client.",
+        actorType: "reviewer",
       }),
     );
   });

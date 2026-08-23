@@ -265,7 +265,7 @@ export class WorkflowEngine {
       workflowRunId: review.workflowRunId,
       type: "review.note_added",
       summary: action.note,
-      actorType: "reviewer",
+      actorType: this.actorForActionSource(action.source),
       payload: { reviewRequestId: review.id },
     });
     return { ok: true, message: "Review note added." };

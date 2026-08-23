@@ -50,13 +50,23 @@ export async function executeVoiceWorkflowTool(input: {
     }
 
     const definition = getWorkflowDefinition(run.definitionId);
+    if (action.type === "schedule_follow_up" && !definition.stepTemplates.some((step) => step.type === action.stepType)) {
+      throw new Error(`Step type ${action.stepType} is not defined for workflow ${definition.id}.`);
+    }
     const engine = new WorkflowEngine({ store, definitions: workflowDefinitions });
     result = await routeWorkflowAction({ action, definition, engine });
   } catch (error) {
-    await appendToolEvent(eventContext, "tool_result", {
-      ok: false,
-      message: errorMessage(error),
-    });
+    try {
+      await appendToolEvent(eventContext, "tool_result", {
+        ok: false,
+        message: errorMessage(error),
+      });
+    } catch (persistenceError) {
+      throw new AggregateError(
+        [error, persistenceError],
+        "Voice tool execution failed and its result could not be persisted.",
+      );
+    }
     throw error;
   }
 
@@ -118,6 +128,7 @@ function toWorkflowAction(workflowRunId: string, toolName: VoiceToolName, payloa
     type: "add_review_note",
     reviewRequestId: stringField(body, "reviewRequestId"),
     note: stringField(body, "note"),
+    source: "voice_session",
   };
 }
 

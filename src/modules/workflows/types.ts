@@ -109,4 +109,5 @@ export type WorkflowAction =
       type: "add_review_note";
       reviewRequestId: string;
       note: string;
+      source: "voice_session" | "reviewer";
     };
