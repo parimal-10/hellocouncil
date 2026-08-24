@@ -153,6 +153,53 @@ describe("structured workflow actions", () => {
     expect(store.steps.get("step-1")).toMatchObject({ status: "due", queueJobScheduledAt: null });
     expect(store.events.map((event) => event.type)).toContain("step.schedule_failed");
   });
+
+  it("runs a scheduled follow-up immediately and records the synthetic outreach", async () => {
+    const store = storeWithRun();
+    store.steps.set("step-1", {
+      id: "step-1",
+      workflowRunId: "run-1",
+      stepType: "provider_follow_up",
+      label: "Follow up with provider",
+      status: "due",
+      dueAt: new Date("2026-08-25T10:00:00.000Z"),
+      attemptCount: 0,
+      payload: {},
+    });
+    const engine = new WorkflowEngine({
+      store,
+      definitions: workflowDefinitions,
+      syntheticResponses: {
+        provider_follow_up: "Provider says records are in process and should be ready Friday.",
+      },
+    });
+
+    const result = await engine.runFollowUpNow("run-1", new Date("2026-08-24T12:00:00.000Z"));
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain("Follow-up completed.");
+    expect(store.steps.get("step-1")?.status).toBe("completed");
+    expect(store.contactAttempts).toContainEqual(
+      expect.objectContaining({
+        workflowRunId: "run-1",
+        channel: "phone",
+        summary: expect.stringContaining("records are in process"),
+      }),
+    );
+    expect([...store.steps.values()].some((step) => step.id !== "step-1" && step.status === "due")).toBe(true);
+  });
+
+  it("refuses to run outreach while the workflow is waiting for human review", async () => {
+    const store = storeWithRun();
+    addBlockedReview(store);
+    const engine = new WorkflowEngine({ store, definitions: workflowDefinitions });
+
+    await expect(engine.runFollowUpNow("run-1", new Date("2026-08-24T12:00:00.000Z"))).resolves.toEqual({
+      ok: false,
+      message: "This workflow is waiting for human review. Outreach is paused until a reviewer resumes it.",
+    });
+    expect(store.steps.get("step-1")?.status).toBe("waiting_for_human");
+  });
 });
 
 describe("review actions", () => {

@@ -58,6 +58,7 @@ export type ReviewRequestRecord = {
 export type WorkflowStore = {
   getRun(id: string): Promise<WorkflowRunRecord>;
   getDueSteps(now: Date): Promise<WorkflowStepRecord[]>;
+  listSteps(workflowRunId: string): Promise<WorkflowStepRecord[]>;
   getStep(id: string): Promise<WorkflowStepRecord>;
   getReview(id: string): Promise<ReviewRequestRecord>;
   isAssignableFirmUser(id: string): Promise<boolean>;
@@ -103,6 +104,15 @@ export class DrizzleWorkflowStore implements WorkflowStore {
           or(isNull(workflowSteps.queueSchedulingClaimUntil), lte(workflowSteps.queueSchedulingClaimUntil, now)),
         ),
       )
+      .orderBy(asc(workflowSteps.dueAt));
+    return rows as WorkflowStepRecord[];
+  }
+
+  async listSteps(workflowRunId: string): Promise<WorkflowStepRecord[]> {
+    const rows = await this.client
+      .select()
+      .from(workflowSteps)
+      .where(eq(workflowSteps.workflowRunId, workflowRunId))
       .orderBy(asc(workflowSteps.dueAt));
     return rows as WorkflowStepRecord[];
   }

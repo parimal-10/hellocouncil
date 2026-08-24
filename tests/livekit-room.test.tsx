@@ -37,6 +37,19 @@ describe("LiveKitVoiceLauncher", () => {
     expect(screen.getByRole("button", { name: /start livekit session/i })).toBeInTheDocument();
   });
 
+  it("uses the case follow-up label when provided", () => {
+    render(
+      <LiveKitVoiceLauncher
+        runs={[{ id: "run-1", title: "Medical follow-up", summary: "Call provider" }]}
+        heading="Do this follow-up now"
+        buttonLabel="Do follow-up now with LiveKit"
+      />,
+    );
+
+    expect(screen.getByText("Do this follow-up now")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /do follow-up now with livekit/i })).toBeInTheDocument();
+  });
+
   it("reports connecting until LiveKit confirms the room connection", () => {
     render(<LiveKitActiveRoom launch={launch} onEnd={() => {}} />);
 

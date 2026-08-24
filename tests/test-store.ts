@@ -32,6 +32,12 @@ export class TestWorkflowStore implements WorkflowStore {
     );
   }
 
+  async listSteps(workflowRunId: string) {
+    return [...this.steps.values()]
+      .filter((step) => step.workflowRunId === workflowRunId)
+      .sort((left, right) => left.dueAt.getTime() - right.dueAt.getTime());
+  }
+
   async getStep(id: string) {
     const step = this.steps.get(id);
     if (!step) throw new Error(`Workflow step not found: ${id}`);

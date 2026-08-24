@@ -35,12 +35,26 @@ The reusable platform/framework approach was chosen because the durable workflow
 - Persisted simulated voice lifecycle, transcripts, tool calls, and tool results
 - Persisted LiveKit room, participant, and dispatch metadata
 - Seeded demo data
+- Follow-up orchestration: due client check-ins can auto-dial locally, and every scheduling decision is audited
 
 The worker uses app-DB scheduling claims as the scheduling and state authority, with a pg-boss producer used to enqueue claimed work. pg-boss is therefore a queueing mechanism in the current architecture, not the authority for workflow scheduling or state.
 
+Client/case local time is stored as an IANA timezone on `people`. Scheduled instants remain `timestamptz` (UTC). Conversion through `src/modules/time/timezone.ts` is the shared boundary; dashboard/voice briefing surfaces are not fully switched over yet.
+
+Automatic outbound calling is gated by `AUTO_OUTBOUND_CALLS=true` and is ignored unless `NODE_ENV` is `development` or `test`. The follow-up policy lives in `src/modules/phone/follow-up-policy.ts` (`FOLLOW_UP_POLICY`, id `follow-up-v1`):
+
+- Calling window: Monday–Friday, 9:00 AM–5:00 PM in the client's IANA timezone (narrower than the TCPA quiet-hours flag of 8:00 AM–9:00 PM used on the manual path). US holidays are not skipped.
+- Connected + explicit callback: schedule that exact instant (not snapped to business hours).
+- Connected + concluded: agent `recommendedFollowUpHours` if present (clamped 4–336 hours), else 24 hours when urgency is high, else the workflow default (72 hours for client check-in). These intervals snap forward into the calling window.
+- No connect (no-answer / voicemail / busy / failed): retry 1 in 2 hours (snapped), retry 2 at 10:00 AM local next business day, then human review after 3 unsuccessful connect attempts.
+- Client asked to stop: no further automatic calls.
+
+Every decision is written as a `scheduling.decision` workflow event with action, reason, policy id, dueAt, and metadata — not just the resulting timestamp.
+
 ## Stubbed
 
-- Twilio phone calls
+- Automatic outbound calling outside local/test (`NODE_ENV=production` cannot enable it)
+- Provider follow-ups still use the synthetic worker path (Twilio auto-dial is client check-in only)
 - SMS, email, and provider portal integrations
 - Authentication and firm tenancy
 - Production observability
@@ -61,8 +75,7 @@ For example, a lien verification workflow could define a lienholder follow-up st
 
 ## What to Build Next
 
-1. Migrate from the deprecated upstream `@livekit/agents-plugin-livekit` multilingual text turn detector when the LiveKit SDK provides its replacement.
-2. Add authentication, firm tenancy, and role-based review permissions.
-3. Add real communication adapters, including Twilio phone calls, behind a communication seam.
-4. Add worker observability and stuck-step alerts.
-5. Move to Temporal if workflow branching and duration outgrow the DB-backed runner.
+1. Add authentication, firm tenancy, and role-based review permissions.
+2. Turn on automatic outbound calling outside local/test once the follow-up policy is reviewed, and add a provider Twilio path.
+3. Add worker observability and stuck-step alerts.
+4. Move to Temporal if workflow branching and duration outgrow the DB-backed runner.

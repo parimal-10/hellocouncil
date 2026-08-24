@@ -1,7 +1,25 @@
 import { configureWorkflowQueues, createBoss, jobNames, PgBossWorkflowStepScheduler } from "./boss";
+import { isAutomaticOutboundCallingEnabled } from "@/modules/phone/auto-dial";
+import { createWorkerOutboundDialer } from "@/modules/phone/worker-dialer";
 import { DrizzleWorkflowStore } from "@/modules/workflows/store";
 import { reconcileDueSteps } from "./reconcile-due-steps";
 import { runDueStepJob, type RunDueStepJob } from "./run-due-step";
+import type { OutboundFollowUpPort } from "@/modules/workflows/engine";
+
+function loadOutboundCaller(): OutboundFollowUpPort | undefined {
+  if (!isAutomaticOutboundCallingEnabled()) {
+    console.log("Automatic outbound calling is off. Due steps use the synthetic follow-up path.");
+    return undefined;
+  }
+  try {
+    const caller = createWorkerOutboundDialer();
+    console.log("Automatic outbound calling is enabled for local/test only.");
+    return caller;
+  } catch (error) {
+    console.warn("AUTO_OUTBOUND_CALLS is set but phone runtime is not configured; using synthetic follow-ups.", error);
+    return undefined;
+  }
+}
 
 async function main() {
   const boss = createBoss();
@@ -9,6 +27,7 @@ async function main() {
   await configureWorkflowQueues(boss);
   const scheduler = new PgBossWorkflowStepScheduler(boss);
   const store = new DrizzleWorkflowStore();
+  const outboundCaller = loadOutboundCaller();
   const reconcile = () => reconcileDueSteps({ store, scheduler, now: new Date() });
 
   await reconcile();
@@ -17,7 +36,7 @@ async function main() {
   }, 60_000);
 
   await boss.work<RunDueStepJob>(jobNames.runDueStep, async ([job]) => {
-    await runDueStepJob(job.data, scheduler);
+    await runDueStepJob(job.data, scheduler, outboundCaller);
   });
 
   console.log(`Worker listening for ${jobNames.runDueStep}`);

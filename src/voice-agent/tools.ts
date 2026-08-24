@@ -1,15 +1,18 @@
 import { routeWorkflowAction, type WorkflowActionResult } from "@/modules/workflows/action-router";
+import { loadWorkflowBriefing } from "@/modules/workflows/briefing";
 import { getWorkflowDefinition, workflowDefinitions } from "@/modules/workflows/definitions";
 import { WorkflowEngine } from "@/modules/workflows/engine";
 import type { WorkflowStore } from "@/modules/workflows/store";
 import type { VoiceSessionPersistence } from "@/modules/voice/session-runner";
-import type { ReviewBlockReason, WorkflowAction } from "@/modules/workflows/types";
+import type { ReviewBlockReason, WorkflowAction, WorkflowDefinition } from "@/modules/workflows/types";
 
 export const voiceToolNames = [
+  "get_workflow_status",
   "create_update",
   "request_review",
   "mark_contact_attempt",
   "schedule_follow_up",
+  "run_follow_up_now",
   "add_review_note",
 ] as const;
 
@@ -40,6 +43,8 @@ export async function executeVoiceWorkflowTool(input: {
   voiceEventStore?: VoiceToolEventStore;
   voiceSessionId?: string;
   toolCallId?: string;
+  loadBriefing?: typeof loadWorkflowBriefing;
+  now?: Date;
 }): Promise<WorkflowActionResult> {
   const eventContext = voiceEventContext(input);
   if (eventContext) {
@@ -81,29 +86,44 @@ export async function executeVoiceWorkflowTool(input: {
     }
 
     const workflowRunId = requiredString(input.workflowRunId, "workflowRunId");
-    const action = toWorkflowAction(workflowRunId, input.toolName, input.payload);
     const store = input.store ?? await defaultWorkflowStore();
-    const run = await store.getRun(workflowRunId);
-    if (action.type === "add_review_note") {
-      const review = await store.getReview(action.reviewRequestId);
-      if (review.workflowRunId !== workflowRunId) {
+
+    if (input.toolName === "get_workflow_status") {
+      const briefing = await (input.loadBriefing ?? loadWorkflowBriefing)(workflowRunId, input.now);
+      result = { ok: true, message: briefing.spokenSummary };
+    } else if (input.toolName === "run_follow_up_now") {
+      const engine = new WorkflowEngine({ store, definitions: workflowDefinitions });
+      result = await engine.runFollowUpNow(workflowRunId, input.now ?? new Date());
+    } else {
+      const action = toWorkflowAction(workflowRunId, input.toolName, input.payload);
+      const run = await store.getRun(workflowRunId);
+      if (action.type === "add_review_note") {
+        const review = await store.getReview(action.reviewRequestId);
+        if (review.workflowRunId !== workflowRunId) {
+          throw new VoiceToolPublicError(
+            `Review ${review.id} does not belong to workflow run ${workflowRunId}.`,
+          );
+        }
+        if (review.status !== "open" && review.status !== "assigned") {
+          throw new VoiceToolPublicError(`Review ${review.id} is not open or assigned.`);
+        }
+      }
+
+      const definition = getWorkflowDefinition(run.definitionId);
+      const resolvedAction = action.type === "schedule_follow_up"
+        ? resolveScheduleFollowUp(action, definition, input.payload, input.now ?? new Date())
+        : action;
+      if (
+        resolvedAction.type === "schedule_follow_up"
+        && !definition.stepTemplates.some((step) => step.type === resolvedAction.stepType)
+      ) {
         throw new VoiceToolPublicError(
-          `Review ${review.id} does not belong to workflow run ${workflowRunId}.`,
+          `Step type ${resolvedAction.stepType} is not defined for workflow ${definition.id}. Valid step types: ${definition.stepTemplates.map((step) => step.type).join(", ")}.`,
         );
       }
-      if (review.status !== "open" && review.status !== "assigned") {
-        throw new VoiceToolPublicError(`Review ${review.id} is not open or assigned.`);
-      }
+      const engine = new WorkflowEngine({ store, definitions: workflowDefinitions });
+      result = await routeWorkflowAction({ action: resolvedAction, definition, engine });
     }
-
-    const definition = getWorkflowDefinition(run.definitionId);
-    if (action.type === "schedule_follow_up" && !definition.stepTemplates.some((step) => step.type === action.stepType)) {
-      throw new VoiceToolPublicError(
-        `Step type ${action.stepType} is not defined for workflow ${definition.id}.`,
-      );
-    }
-    const engine = new WorkflowEngine({ store, definitions: workflowDefinitions });
-    result = await routeWorkflowAction({ action, definition, engine });
   } catch (error) {
     const safeError = safeVoiceToolError(error);
     try {
@@ -173,11 +193,17 @@ function toWorkflowAction(workflowRunId: string, toolName: VoiceToolName, payloa
   }
 
   if (toolName === "schedule_follow_up") {
+    if (body.dueAt !== undefined && body.dueAt !== null && body.dueAt !== "") {
+      dateField(body, "dueAt");
+    }
+    if (body.dueInHours !== undefined) {
+      numberField(body, "dueInHours");
+    }
     return {
       type: "schedule_follow_up",
       workflowRunId,
-      stepType: stringField(body, "stepType"),
-      dueAt: dateField(body, "dueAt"),
+      stepType: optionalString(body, "stepType") ?? "",
+      dueAt: body.dueAt ? dateField(body, "dueAt") : new Date(0),
       reason: stringField(body, "reason"),
     };
   }
@@ -201,11 +227,49 @@ function stringField(payload: Record<string, unknown>, key: string) {
   return requiredString(payload[key], key);
 }
 
+function optionalString(payload: Record<string, unknown>, key: string) {
+  const value = payload[key];
+  if (value === undefined || value === null || value === "") return undefined;
+  return requiredString(value, key);
+}
+
 function requiredString(value: unknown, key: string) {
   if (typeof value !== "string" || !value.trim()) {
     throw new VoiceToolPublicError(`${key} is required.`);
   }
   return value.trim();
+}
+
+function numberField(payload: Record<string, unknown>, key: string) {
+  const value = payload[key];
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  if (!Number.isFinite(parsed)) {
+    throw new VoiceToolPublicError(`${key} must be a number.`);
+  }
+  return parsed;
+}
+
+function resolveScheduleFollowUp(
+  action: Extract<WorkflowAction, { type: "schedule_follow_up" }>,
+  definition: WorkflowDefinition,
+  payload: unknown,
+  now: Date,
+): Extract<WorkflowAction, { type: "schedule_follow_up" }> {
+  const body = objectPayload(payload);
+  const template = action.stepType
+    ? definition.stepTemplates.find((step) => step.type === action.stepType)
+    : definition.stepTemplates[0];
+  if (!template) {
+    throw new VoiceToolPublicError(
+      `Step type ${action.stepType} is not defined for workflow ${definition.id}. Valid step types: ${definition.stepTemplates.map((step) => step.type).join(", ")}.`,
+    );
+  }
+  const dueAt = action.dueAt.getTime() !== 0
+    ? action.dueAt
+    : body.dueInHours !== undefined
+      ? new Date(now.getTime() + numberField(body, "dueInHours") * 60 * 60 * 1000)
+      : new Date(now.getTime() + template.defaultDueInHours * 60 * 60 * 1000);
+  return { ...action, stepType: template.type, dueAt };
 }
 
 function reviewReasonField(payload: Record<string, unknown>, key: string): ReviewBlockReason {

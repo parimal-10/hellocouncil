@@ -15,6 +15,8 @@ export const people = pgTable("people", {
   role: text("role").notNull(),
   phone: text("phone"),
   email: text("email"),
+  timeZone: text("time_zone"),
+  timeZoneSource: text("time_zone_source"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -159,5 +161,36 @@ export const voiceSessionEvents = pgTable(
       table.toolCallId,
       table.type,
     ),
+  }),
+);
+
+export const phoneCalls = pgTable(
+  "phone_calls",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    caseId: uuid("case_id").notNull().references(() => cases.id),
+    workflowRunId: uuid("workflow_run_id").notNull().references(() => workflowRuns.id),
+    workflowStepId: uuid("workflow_step_id").references(() => workflowSteps.id),
+    voiceSessionId: uuid("voice_session_id").references(() => voiceSessions.id),
+    contactAttemptId: uuid("contact_attempt_id").references(() => contactAttempts.id),
+    twilioCallSid: text("twilio_call_sid"),
+    toNumber: text("to_number").notNull(),
+    fromNumber: text("from_number").notNull(),
+    timeZone: text("time_zone").notNull(),
+    briefing: text("briefing").notNull().default(""),
+    connectionStatus: text("connection_status").notNull().default("initiated"),
+    twilioCallStatus: text("twilio_call_status"),
+    answeredBy: text("answered_by"),
+    transcript: jsonb("transcript").notNull().default([]),
+    structuredOutcome: jsonb("structured_outcome"),
+    complianceFlags: jsonb("compliance_flags").notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    orchestrationAppliedAt: timestamp("orchestration_applied_at", { withTimezone: true }),
+  },
+  (table) => ({
+    callSidUnique: uniqueIndex("phone_calls_twilio_call_sid_unique").on(table.twilioCallSid),
+    caseIdx: index("phone_calls_case_idx").on(table.caseId, table.createdAt),
   }),
 );

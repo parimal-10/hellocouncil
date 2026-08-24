@@ -1,9 +1,16 @@
+import type { FollowUpDecision } from "@/modules/phone/follow-up-policy";
+import { decideAttemptWindow } from "@/modules/phone/follow-up-policy";
 import { getSyntheticResponse } from "./synthetic-responses";
-import type { WorkflowStepRecord, WorkflowStore } from "./store";
-import type { WorkflowAction, WorkflowDefinition, WorkflowSignal } from "./types";
+import type { WorkflowRunRecord, WorkflowStepRecord, WorkflowStore } from "./store";
+import type { ReviewDecision, WorkflowAction, WorkflowDefinition, WorkflowSignal } from "./types";
 
 export type WorkflowStepScheduler = {
   scheduleDueStep(input: { stepId: string; runAt: Date }): Promise<string>;
+};
+
+export type OutboundFollowUpPort = {
+  evaluateWindow(input: { workflowRunId: string; now: Date }): Promise<{ timeZone: string }>;
+  placeCall(input: { workflowRunId: string; stepId: string; now: Date }): Promise<{ callId: string }>;
 };
 
 export class WorkflowEngine {
@@ -15,16 +22,50 @@ export class WorkflowEngine {
       definitions: readonly WorkflowDefinition[];
       syntheticResponses?: Record<string, string>;
       scheduler?: WorkflowStepScheduler;
+      outboundCaller?: OutboundFollowUpPort;
     },
   ) {
     this.definitionsById = new Map(input.definitions.map((definition) => [definition.id, definition]));
   }
 
+  async getRun(id: string): Promise<WorkflowRunRecord> {
+    return this.input.store.getRun(id);
+  }
+
+  async getStep(id: string): Promise<WorkflowStepRecord> {
+    return this.input.store.getStep(id);
+  }
+
   async advanceDueStep(stepId: string, now: Date): Promise<void> {
+    const existing = await this.input.store.getStep(stepId);
+    if (existing.status !== "due" || existing.dueAt > now) return;
+
+    if (this.shouldAutoDial(existing)) {
+      const { timeZone } = await this.input.outboundCaller!.evaluateWindow({
+        workflowRunId: existing.workflowRunId,
+        now,
+      });
+      const window = decideAttemptWindow({ now, timeZone });
+      if (window.action === "defer_to_window") {
+        await this.applyFollowUpDecision({
+          workflowRunId: existing.workflowRunId,
+          stepId: existing.id,
+          decision: window,
+          now,
+        });
+        return;
+      }
+    }
+
     const step = await this.input.store.claimDueStep(stepId, now);
     if (!step) return;
 
     try {
+      if (this.shouldAutoDial(step)) {
+        await this.placeAutoDial(step, now);
+        return;
+      }
+
       const run = await this.input.store.getRun(step.workflowRunId);
       const definition = this.definitionFor(run.definitionId);
 
@@ -113,6 +154,61 @@ export class WorkflowEngine {
       await this.recoverClaimedStep(step, error);
       throw error;
     }
+  }
+
+  async runFollowUpNow(workflowRunId: string, now: Date): Promise<{ ok: boolean; message: string }> {
+    const run = await this.input.store.getRun(workflowRunId);
+    if (run.status === "waiting_for_human") {
+      return {
+        ok: false,
+        message: "This workflow is waiting for human review. Outreach is paused until a reviewer resumes it.",
+      };
+    }
+    if (run.status !== "active") {
+      return {
+        ok: false,
+        message: `This workflow is ${run.status}, so a follow-up cannot be run now.`,
+      };
+    }
+
+    const definition = this.definitionFor(run.definitionId);
+    const steps = await this.input.store.listSteps(workflowRunId);
+    let step = steps
+      .filter((item) => item.status === "due")
+      .sort((left, right) => left.dueAt.getTime() - right.dueAt.getTime())[0];
+
+    if (!step) {
+      const template = definition.stepTemplates[0];
+      if (!template) {
+        return { ok: false, message: "This workflow has no follow-up step type to run." };
+      }
+      step = await this.input.store.createStep({
+        workflowRunId,
+        stepType: template.type,
+        label: template.label,
+        dueAt: now,
+        payload: { reason: "Immediate follow-up requested." },
+      });
+    } else if (step.dueAt > now) {
+      await this.input.store.rescheduleStep(step.id, now);
+    }
+
+    await this.advanceDueStep(step.id, now);
+    const after = await this.input.store.getStep(step.id);
+    if (after.status === "due") {
+      return { ok: false, message: "The follow-up is still queued and was not executed." };
+    }
+
+    const updated = await this.input.store.getRun(workflowRunId);
+    const next = (await this.input.store.listSteps(workflowRunId))
+      .filter((item) => item.status === "due")
+      .sort((left, right) => left.dueAt.getTime() - right.dueAt.getTime())[0];
+    const nextText = next
+      ? ` Next follow-up: ${next.label} at ${next.dueAt.toISOString()}.`
+      : updated.status === "waiting_for_human"
+        ? " Human review is now required before outreach can continue."
+        : " No further follow-up is scheduled.";
+    return { ok: true, message: `Follow-up completed. ${updated.summary}${nextText}` };
   }
 
   async applyAction(action: WorkflowAction): Promise<{ ok: boolean; message: string }> {
@@ -285,7 +381,214 @@ export class WorkflowEngine {
     return definition;
   }
 
+  async applyFollowUpDecision(input: {
+    workflowRunId: string;
+    stepId?: string | null;
+    callId?: string | null;
+    decision: FollowUpDecision;
+    failedConnectCount?: number;
+    now: Date;
+    review?: Extract<ReviewDecision, { kind: "block" }>;
+  }): Promise<void> {
+    const run = await this.input.store.getRun(input.workflowRunId);
+    const definition = this.definitionFor(run.definitionId);
+    const step = input.stepId ? await this.input.store.getStep(input.stepId) : null;
+    await this.logSchedulingDecision(input);
+
+    if (input.decision.action === "human_review") {
+      const review =
+        input.review ??
+        ({
+          kind: "block" as const,
+          reason: "failed_contact_threshold" as const,
+          severity: "medium" as const,
+          recommendedAction: "Review contact strategy before another attempt.",
+          summary: input.decision.reason,
+        } satisfies Extract<ReviewDecision, { kind: "block" }>);
+      if (step) {
+        await this.input.store.updateStepPayload(step.id, this.decisionPayload(input));
+        await this.blockStep(run.id, step.id, step.attemptCount, review);
+      } else {
+        await this.input.store.updateRunStatus(run.id, "waiting_for_human", review.summary);
+        await this.input.store.createReview({ workflowRunId: run.id, decision: review });
+      }
+      return;
+    }
+
+    if (input.decision.action === "complete") {
+      if (step && (step.status === "running" || step.status === "due")) {
+        await this.input.store.updateStepPayload(step.id, this.decisionPayload(input));
+        await this.input.store.updateStepStatus(step.id, "completed", step.attemptCount);
+      }
+      await this.input.store.updateRunStatus(run.id, "active", input.decision.reason);
+      return;
+    }
+
+    if (input.decision.action === "retry" || input.decision.action === "defer_to_window") {
+      if (!input.decision.dueAt) return;
+      if (step) {
+        await this.input.store.updateStepPayload(step.id, this.decisionPayload(input));
+        await this.input.store.rescheduleStep(step.id, input.decision.dueAt);
+        if (input.decision.action === "retry") {
+          await this.enqueueIfPresent(step.id, input.decision.dueAt, input.now, run.id);
+        }
+      } else {
+        await this.createFollowUpStep({
+          runId: run.id,
+          definition,
+          completedStepType: definition.stepTemplates[0]?.type ?? "client_check_in",
+          dueAt: input.decision.dueAt,
+          now: input.now,
+          payload: this.decisionPayload(input),
+        });
+      }
+      return;
+    }
+
+    if (input.decision.action === "schedule") {
+      if (!input.decision.dueAt) return;
+      if (step && (step.status === "running" || step.status === "due")) {
+        await this.input.store.updateStepPayload(step.id, this.decisionPayload(input));
+        await this.input.store.updateStepStatus(step.id, "completed", step.attemptCount);
+        await this.input.store.appendEvent({
+          workflowRunId: run.id,
+          type: "step.completed",
+          summary: input.decision.reason,
+          actorType: "worker",
+          payload: { stepId: step.id, callId: input.callId },
+        });
+      }
+      await this.createFollowUpStep({
+        runId: run.id,
+        definition,
+        completedStepType: step?.stepType ?? definition.stepTemplates[0]?.type ?? "client_check_in",
+        dueAt: input.decision.dueAt,
+        now: input.now,
+        payload: { failedConnectCount: 0, schedulingDecision: this.serializeDecision(input.decision) },
+      });
+    }
+  }
+
+  private shouldAutoDial(step: WorkflowStepRecord): boolean {
+    return Boolean(this.input.outboundCaller) && step.stepType === "client_check_in";
+  }
+
+  private async placeAutoDial(step: WorkflowStepRecord, now: Date): Promise<void> {
+    await this.input.store.appendEvent({
+      workflowRunId: step.workflowRunId,
+      type: "step.running",
+      summary: `${step.label} started with an automatic outbound call.`,
+      actorType: "worker",
+      payload: { stepId: step.id, stepType: step.stepType, autoDial: true },
+    });
+    const placed = await this.input.outboundCaller!.placeCall({
+      workflowRunId: step.workflowRunId,
+      stepId: step.id,
+      now,
+    });
+    await this.input.store.updateStepPayload(step.id, {
+      outboundCallId: placed.callId,
+      awaitingCallCompletion: true,
+    });
+  }
+
+  private async createFollowUpStep(input: {
+    runId: string;
+    definition: WorkflowDefinition;
+    completedStepType: string;
+    dueAt: Date;
+    now: Date;
+    payload: Record<string, unknown>;
+  }) {
+    const template = input.definition.scheduleNextStep({
+      completedStepType: input.completedStepType,
+      now: input.now,
+      signal: {
+        text: "",
+        channel: "phone",
+        attemptCount: 0,
+        hasAuthorization: true,
+        actorRole: "client",
+      },
+    });
+    if (!template) {
+      await this.input.store.updateRunStatus(input.runId, "completed", "Workflow completed.");
+      return;
+    }
+    const scheduledStep = await this.input.store.createStep({
+      workflowRunId: input.runId,
+      stepType: template.type,
+      label: template.label,
+      dueAt: input.dueAt,
+      payload: input.payload,
+    });
+    await this.enqueueIfPresent(scheduledStep.id, input.dueAt, input.now, input.runId);
+    await this.input.store.appendEvent({
+      workflowRunId: input.runId,
+      type: "step.scheduled",
+      summary: `${template.label} scheduled.`,
+      actorType: "worker",
+      payload: { stepId: scheduledStep.id, stepType: template.type, dueAt: input.dueAt.toISOString() },
+    });
+  }
+
+  private async enqueueIfPresent(stepId: string, dueAt: Date, now: Date, workflowRunId: string) {
+    if (!this.input.scheduler) return;
+    try {
+      const jobId = await this.input.scheduler.scheduleDueStep({ stepId, runAt: dueAt });
+      if (!jobId) throw new Error("Due-step scheduler did not return a job id.");
+      await this.input.store.markDueStepScheduled(stepId, now);
+    } catch (error) {
+      await this.markScheduleFailed(workflowRunId, stepId, error);
+    }
+  }
+
+  private async logSchedulingDecision(input: {
+    workflowRunId: string;
+    stepId?: string | null;
+    callId?: string | null;
+    decision: FollowUpDecision;
+  }) {
+    await this.input.store.appendEvent({
+      workflowRunId: input.workflowRunId,
+      type: "scheduling.decision",
+      summary: input.decision.reason,
+      actorType: "worker",
+      payload: {
+        action: input.decision.action,
+        reason: input.decision.reason,
+        policyId: input.decision.policyId,
+        dueAt: input.decision.dueAt?.toISOString() ?? null,
+        metadata: input.decision.metadata,
+        callId: input.callId ?? null,
+        stepId: input.stepId ?? null,
+      },
+    });
+  }
+
+  private decisionPayload(input: { decision: FollowUpDecision; failedConnectCount?: number; callId?: string | null }) {
+    const payload: Record<string, unknown> = {
+      awaitingCallCompletion: false,
+      schedulingDecision: this.serializeDecision(input.decision),
+    };
+    if (typeof input.failedConnectCount === "number") payload.failedConnectCount = input.failedConnectCount;
+    if (input.callId) payload.outboundCallId = input.callId;
+    return payload;
+  }
+
+  private serializeDecision(decision: FollowUpDecision) {
+    return {
+      action: decision.action,
+      reason: decision.reason,
+      policyId: decision.policyId,
+      dueAt: decision.dueAt?.toISOString() ?? null,
+      metadata: decision.metadata,
+    };
+  }
+
   private async recoverClaimedStep(step: WorkflowStepRecord, error: unknown) {
+    if (this.hasLiveOutboundCall(step.payload)) return;
+
     const retryLimit = this.retryLimitFor(step.stepType);
     const retryable = step.attemptCount <= retryLimit;
     const transitioned = await this.input.store.transitionClaimedStepAfterFailure(
@@ -410,6 +713,10 @@ export class WorkflowEngine {
     if (!this.isPayload(payload)) return fallback;
     const value = payload[key];
     return typeof value === "boolean" ? value : fallback;
+  }
+
+  private hasLiveOutboundCall(payload: unknown) {
+    return this.isPayload(payload) && typeof payload.outboundCallId === "string" && payload.awaitingCallCompletion === true;
   }
 
   private isPayload(payload: unknown): payload is Record<string, unknown> {

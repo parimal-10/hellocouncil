@@ -6,7 +6,17 @@ import React, { useState, useTransition } from "react";
 import { createLiveKitVoiceSessionAction } from "../actions/livekit";
 import type { BrowserVoiceSessionLaunch } from "@/modules/voice/livekit-types";
 
-export function LiveKitVoiceLauncher({ runs }: { runs: Array<{ id: string; title: string; summary: string }> }) {
+export function LiveKitVoiceLauncher({
+  runs,
+  heading = "Real LiveKit session",
+  description = "Start a browser microphone session for a workflow run.",
+  buttonLabel = "Start LiveKit session",
+}: {
+  runs: Array<{ id: string; title: string; summary: string }>;
+  heading?: string;
+  description?: string;
+  buttonLabel?: string;
+}) {
   const [launch, setLaunch] = useState<BrowserVoiceSessionLaunch | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -28,8 +38,8 @@ export function LiveKitVoiceLauncher({ runs }: { runs: Array<{ id: string; title
 
   return (
     <section className="rounded border border-line bg-white p-4">
-      <h2 className="font-semibold">Real LiveKit session</h2>
-      <p className="text-sm text-muted">Start a browser microphone session for a workflow run.</p>
+      <h2 className="font-semibold">{heading}</h2>
+      <p className="text-sm text-muted">{description}</p>
       {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
       <div className="mt-3 space-y-3">
         {runs.map((run) => (
@@ -42,7 +52,7 @@ export function LiveKitVoiceLauncher({ runs }: { runs: Array<{ id: string; title
               type="submit"
               disabled={isPending}
             >
-              <Mic className="inline-block" size={16} /> Start LiveKit session
+              <Mic className="inline-block" size={16} /> {isPending ? "Starting..." : buttonLabel}
             </button>
           </form>
         ))}

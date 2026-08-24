@@ -71,10 +71,12 @@ function recordingEventStore() {
 describe("voice agent tools", () => {
   it("exposes only conservative workflow tools", () => {
     expect(voiceToolNames).toEqual([
+      "get_workflow_status",
       "create_update",
       "request_review",
       "mark_contact_attempt",
       "schedule_follow_up",
+      "run_follow_up_now",
       "add_review_note",
     ]);
   });
@@ -208,6 +210,79 @@ describe("voice agent tools", () => {
       dueAt: new Date("2026-08-24T10:00:00.000Z"),
       payload: { reason: "Call the provider tomorrow." },
     });
+  });
+
+  it("defaults schedule_follow_up step type and due date from the workflow definition", async () => {
+    const store = storeWithRun();
+    const now = new Date("2026-08-24T10:00:00.000Z");
+
+    await executeVoiceWorkflowTool({
+      workflowRunId: "run-1",
+      toolName: "schedule_follow_up",
+      payload: { reason: "Call the provider again." },
+      store,
+      now,
+    });
+
+    expect(store.steps.get("step-1")).toMatchObject({
+      workflowRunId: "run-1",
+      stepType: "provider_follow_up",
+      dueAt: new Date("2026-08-25T10:00:00.000Z"),
+      payload: { reason: "Call the provider again." },
+    });
+  });
+
+  it("returns the spoken case briefing for get_workflow_status", async () => {
+    const store = storeWithRun();
+
+    const result = await executeVoiceWorkflowTool({
+      workflowRunId: "run-1",
+      toolName: "get_workflow_status",
+      payload: {},
+      store,
+      loadBriefing: async () => ({
+        currentStatus: "Lee v. Metro Transit is active.",
+        whatHappened: [],
+        nextSteps: ["Follow up with provider is due now."],
+        nextFollowUp: { label: "Follow up with provider", dueAt: new Date("2026-08-24T10:00:00.000Z"), status: "due" },
+        openReviews: [],
+        validStepTypes: ["provider_follow_up"],
+        canRunFollowUpNow: true,
+        spokenSummary: "Lee v. Metro Transit has a provider follow-up due now.",
+        agentContext: "Case: Lee v. Metro Transit.",
+      }),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      message: "Lee v. Metro Transit has a provider follow-up due now.",
+    });
+  });
+
+  it("runs the next follow-up immediately through the workflow engine", async () => {
+    const store = storeWithRun();
+    store.steps.set("step-1", {
+      id: "step-1",
+      workflowRunId: "run-1",
+      stepType: "provider_follow_up",
+      label: "Follow up with provider",
+      status: "due",
+      dueAt: new Date("2026-08-24T09:00:00.000Z"),
+      attemptCount: 0,
+      payload: {},
+    });
+
+    const result = await executeVoiceWorkflowTool({
+      workflowRunId: "run-1",
+      toolName: "run_follow_up_now",
+      payload: {},
+      store,
+      now: new Date("2026-08-24T10:00:00.000Z"),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain("Follow-up completed.");
+    expect(store.steps.get("step-1")?.status).toBe("completed");
   });
 
   it("routes add_review_note only when the review belongs to the active run", async () => {
@@ -378,7 +453,7 @@ describe("voice agent tools", () => {
       toolCallId: "tool-2",
       payload: {
         ok: false,
-        message: "Step type not-a-real-step is not defined for workflow medical-records-follow-up.",
+        message: "Step type not-a-real-step is not defined for workflow medical-records-follow-up. Valid step types: provider_follow_up.",
       },
     });
     routeWorkflowAction.mockRestore();

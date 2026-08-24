@@ -1,0 +1,3 @@
+ALTER TABLE "phone_calls" ADD COLUMN "workflow_step_id" uuid;--> statement-breakpoint
+ALTER TABLE "phone_calls" ADD COLUMN "orchestration_applied_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "phone_calls" ADD CONSTRAINT "phone_calls_workflow_step_id_workflow_steps_id_fk" FOREIGN KEY ("workflow_step_id") REFERENCES "public"."workflow_steps"("id") ON DELETE no action ON UPDATE no action;

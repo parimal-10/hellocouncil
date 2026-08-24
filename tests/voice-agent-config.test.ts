@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { inference } from "@livekit/agents";
 import {
   buildAgentInstructions,
   createAgentModelConfig,
+  createTurnDetection,
   createVoiceAgentServerOptions,
   createWorkflowTools,
   requireLiveKitRoomName,
@@ -21,6 +23,12 @@ describe("voice agent configuration", () => {
 
     expect(packageJson.scripts["voice:agent"]).toBe("tsx src/voice-agent/start.ts start");
     expect(packageJson.scripts["voice:agent:dev"]).toBe("tsx src/voice-agent/start.ts dev");
+  });
+
+  it("uses the SDK audio turn detector instead of the plugin multilingual model", () => {
+    expect(createTurnDetection({ apiKey: "key", apiSecret: "secret" })).toBeInstanceOf(
+      inference.TurnDetector,
+    );
   });
 
   it("uses explicit LiveKit inference model config", () => {
@@ -65,7 +73,21 @@ describe("voice agent configuration", () => {
     expect(buildAgentInstructions()).toContain(
       "Do not approve, reject, resolve, or assign legal review requests",
     );
-    expect(buildAgentInstructions()).toContain("Use structured workflow tools");
+    expect(buildAgentInstructions()).toContain("run_follow_up_now");
+    expect(buildAgentInstructions()).toContain("get_workflow_status");
+    expect(
+      buildAgentInstructions({
+        currentStatus: "Lee v. Metro Transit is active.",
+        whatHappened: [],
+        nextSteps: [],
+        nextFollowUp: null,
+        openReviews: [],
+        validStepTypes: ["provider_follow_up"],
+        canRunFollowUpNow: true,
+        spokenSummary: "Lee v. Metro Transit is active.",
+        agentContext: "Case: Lee v. Metro Transit. Valid follow-up step types: provider_follow_up.",
+      }),
+    ).toContain("Case: Lee v. Metro Transit.");
   });
 
   it("resolves the exact persisted launch and workflow definition from dispatch metadata", async () => {
@@ -184,6 +206,7 @@ describe("voice agent configuration", () => {
       {
         workflowRunId: "run-1",
         voiceSessionId: "voice-1",
+        participantIdentity: "browser-1",
         voiceEventStore,
       },
       async (input) => {
@@ -192,6 +215,7 @@ describe("voice agent configuration", () => {
       },
     );
     const toolCases = [
+      ["get_workflow_status", {}],
       ["create_update", { summary: "Records are ready." }],
       [
         "request_review",
@@ -209,6 +233,7 @@ describe("voice agent configuration", () => {
           reason: "Call again tomorrow.",
         },
       ],
+      ["run_follow_up_now", {}],
       [
         "add_review_note",
         { reviewRequestId: "review-1", note: "Waiting for authorization." },
@@ -219,7 +244,7 @@ describe("voice agent configuration", () => {
 
     for (const [toolName, payload] of toolCases) {
       const tool = workflowTools[toolName];
-      await tool.execute(payload, {
+      await tool.execute(payload as never, {
         abortSignal: new AbortController().signal,
         ctx: {} as never,
         toolCallId: `call-${toolName}`,
@@ -230,11 +255,48 @@ describe("voice agent configuration", () => {
       toolCases.map(([toolName, payload]) => ({
         workflowRunId: "run-1",
         toolName,
-        payload,
+        payload: toolName === "get_workflow_status" || toolName === "run_follow_up_now" ? {} : payload,
         voiceEventStore,
         voiceSessionId: "voice-1",
         toolCallId: `call-${toolName}`,
       })),
     );
+  });
+
+  it("returns a spoken tool error instead of throwing out of the LiveKit tool execute", async () => {
+    const voiceEventStore: VoiceToolEventStore = {
+      async appendSessionEvent() {},
+      async claimToolCall() {
+        return true;
+      },
+      async getToolCallResult() {
+        return null;
+      },
+    };
+    const workflowTools = createWorkflowTools(
+      {
+        workflowRunId: "run-1",
+        voiceSessionId: "voice-1",
+        participantIdentity: "browser-1",
+        voiceEventStore,
+      },
+      async () => {
+        throw new Error("summary is required.");
+      },
+    );
+
+    await expect(
+      workflowTools.create_update.execute(
+        { summary: "" },
+        {
+          abortSignal: new AbortController().signal,
+          ctx: {} as never,
+          toolCallId: "call-create_update",
+        },
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      message: "summary is required.",
+    });
   });
 });
