@@ -1,5 +1,11 @@
 import twilio from "twilio";
-import { createOpenAiCompatibleClient, type LlmClient } from "./llm";
+import {
+  createOpenAiCompatibleClient,
+  liveKitInferenceUrl,
+  type LlmAuth,
+  type LlmClient,
+  type LlmClientHooks,
+} from "./llm";
 import type { PhoneCallConfig, TwilioVoiceClient } from "./types";
 
 export type PhoneRuntimeConfig = PhoneCallConfig & {
@@ -7,8 +13,10 @@ export type PhoneRuntimeConfig = PhoneCallConfig & {
   authToken: string;
   llm: {
     apiKey: string;
+    apiSecret?: string;
     model: string;
-    baseUrl?: string;
+    baseUrl: string;
+    auth: LlmAuth;
   };
 };
 
@@ -17,18 +25,12 @@ export function loadPhoneRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Ph
   const authToken = required(env, "TWILIO_AUTH_TOKEN");
   const fromNumber = required(env, "TWILIO_FROM_NUMBER");
   const publicBaseUrl = required(env, "PUBLIC_BASE_URL").replace(/\/$/, "");
-  const apiKey = env.LLM_API_KEY ?? env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("LLM_API_KEY or OPENAI_API_KEY is required for outbound calls.");
   return {
     accountSid,
     authToken,
     fromNumber,
     publicBaseUrl,
-    llm: {
-      apiKey,
-      model: env.LLM_MODEL ?? "gpt-4.1-mini",
-      baseUrl: env.LLM_BASE_URL,
-    },
+    llm: resolveLlmConfig(env),
   };
 }
 
@@ -50,8 +52,36 @@ export function createTwilioVoiceClient(config: Pick<PhoneRuntimeConfig, "accoun
   };
 }
 
-export function createCallLlmClient(config: PhoneRuntimeConfig["llm"]): LlmClient {
-  return createOpenAiCompatibleClient(config);
+export function createCallLlmClient(config: PhoneRuntimeConfig["llm"], hooks?: LlmClientHooks): LlmClient {
+  return createOpenAiCompatibleClient(config, hooks);
+}
+
+function resolveLlmConfig(env: NodeJS.ProcessEnv): PhoneRuntimeConfig["llm"] {
+  const livekitKey = env.LIVEKIT_INFERENCE_API_KEY?.trim() || env.LIVEKIT_API_KEY?.trim();
+  const livekitSecret = env.LIVEKIT_INFERENCE_API_SECRET?.trim() || env.LIVEKIT_API_SECRET?.trim();
+  if (livekitKey && livekitSecret) {
+    return {
+      apiKey: livekitKey,
+      apiSecret: livekitSecret,
+      model: env.LLM_MODEL?.trim() || env.LIVEKIT_LLM_MODEL?.trim() || "openai/gpt-4.1-mini",
+      baseUrl: liveKitInferenceUrl(env.LLM_BASE_URL ?? env.LIVEKIT_INFERENCE_URL),
+      auth: "livekit-jwt",
+    };
+  }
+
+  const openaiKey = env.LLM_API_KEY?.trim() || env.OPENAI_API_KEY?.trim();
+  if (openaiKey) {
+    return {
+      apiKey: openaiKey,
+      model: env.LLM_MODEL?.trim() || "gpt-4.1-mini",
+      baseUrl: (env.LLM_BASE_URL?.trim() || "https://api.openai.com/v1").replace(/\/$/, ""),
+      auth: "bearer",
+    };
+  }
+
+  throw new Error(
+    "LIVEKIT_INFERENCE_API_KEY and LIVEKIT_API_SECRET are required for outbound calls (or set OPENAI_API_KEY).",
+  );
 }
 
 export function twilioWebhookUrl(request: Request, publicBaseUrl: string): string {
