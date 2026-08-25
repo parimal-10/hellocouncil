@@ -1,4 +1,3 @@
-import { runSimulatedVoiceSessionAction } from "../actions/voice";
 import { LiveKitVoiceLauncher } from "./livekit-room";
 import { getVoiceConsoleData, voiceSessionLabel } from "@/modules/dashboard/queries";
 
@@ -12,32 +11,11 @@ export default async function VoicePage() {
       <div>
         <h1 className="text-2xl font-semibold">Voice sessions</h1>
         <p className="mt-1 text-sm text-muted">
-          Real LiveKit sessions require <code>npm run voice:agent</code> and LiveKit environment variables. Simulated sessions remain a deterministic fallback.
+          Real LiveKit sessions require <code>npm run voice:agent</code> and LiveKit environment variables. Outbound phone follow-ups place real Twilio calls.
         </p>
       </div>
 
       <LiveKitVoiceLauncher runs={runs.map((run) => ({ id: run.id, title: run.title, summary: run.summary }))} />
-
-      <section className="border-t border-line pt-5">
-        <h2 className="font-semibold">Simulated voice session</h2>
-        <p className="text-sm text-muted">Replays transcript chunks and structured tool calls through the platform action router.</p>
-        {runs.length === 0 ? (
-          <p className="mt-3 text-sm text-muted">There are no workflow runs available for a simulated session.</p>
-        ) : (
-          <div className="mt-3 space-y-3">
-            {runs.map((run) => (
-              <form key={run.id} action={runSimulatedVoiceSessionAction} className="rounded border border-line bg-white p-4">
-                <input type="hidden" name="workflowRunId" value={run.id} />
-                <p className="font-medium">{run.title}</p>
-                <p className="text-sm text-muted">{run.summary}</p>
-                <button className="mt-3 rounded bg-accent px-3 py-2 text-sm font-medium text-white" type="submit">
-                  Run simulated session
-                </button>
-              </form>
-            ))}
-          </div>
-        )}
-      </section>
 
       <section className="border-t border-line pt-5">
         <h2 className="font-semibold">Recent sessions</h2>

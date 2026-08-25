@@ -126,9 +126,6 @@ export default async function CaseFilePage({ params }: { params: Promise<{ id: s
                     {humanize(attempt.channel)} - {humanize(attempt.outcome)}
                   </p>
                   <p className="text-sm text-muted">{attempt.summary}</p>
-                  {attempt.syntheticResponse ? (
-                    <p className="mt-1 text-xs text-muted">Response: {attempt.syntheticResponse}</p>
-                  ) : null}
                   <p className="mt-1 text-xs text-muted">{formatDate(attempt.attemptedAt)}</p>
                 </li>
               ))}

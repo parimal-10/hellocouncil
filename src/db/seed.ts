@@ -257,7 +257,6 @@ async function main() {
       channel: "phone",
       outcome: "refused",
       summary: "Provider refused to release records.",
-      syntheticResponse: "We cannot release anything without a new authorization.",
       attemptedAt: at(-2),
     },
     {
@@ -265,7 +264,6 @@ async function main() {
       channel: "phone",
       outcome: "reached",
       summary: "Harbor said the request is in the records queue.",
-      syntheticResponse: "The request is in process. Call back tomorrow.",
       attemptedAt: at(-24),
     },
     {
@@ -273,7 +271,6 @@ async function main() {
       channel: "phone",
       outcome: "reached",
       summary: "Westlake said records should be ready Friday.",
-      syntheticResponse: "Records are in process and should be ready Friday.",
       attemptedAt: at(-20),
     },
     {
@@ -281,7 +278,6 @@ async function main() {
       channel: "phone",
       outcome: "reached",
       summary: "Sam reported recovery is improving and had no questions.",
-      syntheticResponse: "Client reports recovery is improving and has no questions.",
       attemptedAt: at(-72),
     },
     {
@@ -290,7 +286,6 @@ async function main() {
       channel: "phone",
       outcome: "reached",
       summary: "Hannah's update was ambiguous.",
-      syntheticResponse: "I'm not sure how treatment is going. Maybe I need to talk to someone.",
       attemptedAt: at(-4),
     },
   ]);

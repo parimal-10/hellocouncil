@@ -1,7 +1,20 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { db, type DbClient } from "@/db/client";
 import { voiceSessionEvents, voiceSessions } from "@/db/schema";
-import type { VoiceSessionPersistence } from "./session-runner";
+
+export type VoiceSessionPersistence = {
+  createSession(input: { caseId: string; workflowRunId: string; provider: string }): Promise<string>;
+  appendSessionEvent(input: {
+    voiceSessionId: string;
+    type: string;
+    speaker?: string;
+    text?: string;
+    toolCallId?: string;
+    payload?: Record<string, unknown>;
+    occurredAt?: Date;
+  }): Promise<void>;
+  completeSession(id: string, status: "completed" | "failed"): Promise<void>;
+};
 
 export type LiveKitSessionRecord = {
   id: string;

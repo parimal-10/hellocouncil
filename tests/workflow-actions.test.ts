@@ -154,7 +154,7 @@ describe("structured workflow actions", () => {
     expect(store.events.map((event) => event.type)).toContain("step.schedule_failed");
   });
 
-  it("runs a scheduled follow-up immediately and records the synthetic outreach", async () => {
+  it("runs a scheduled follow-up immediately by placing the outbound call", async () => {
     const store = storeWithRun();
     store.steps.set("step-1", {
       id: "step-1",
@@ -166,27 +166,32 @@ describe("structured workflow actions", () => {
       attemptCount: 0,
       payload: {},
     });
+    const placedCalls: Array<{ workflowRunId: string; stepId: string }> = [];
     const engine = new WorkflowEngine({
       store,
       definitions: workflowDefinitions,
-      syntheticResponses: {
-        provider_follow_up: "Provider says records are in process and should be ready Friday.",
+      outboundCaller: {
+        evaluateWindow: async () => ({ timeZone: "America/New_York" }),
+        placeCall: async (input) => {
+          placedCalls.push(input);
+          return { callId: "call-now-1" };
+        },
       },
     });
 
     const result = await engine.runFollowUpNow("run-1", new Date("2026-08-24T12:00:00.000Z"));
 
     expect(result.ok).toBe(true);
-    expect(result.message).toContain("Follow-up completed.");
-    expect(store.steps.get("step-1")?.status).toBe("completed");
-    expect(store.contactAttempts).toContainEqual(
-      expect.objectContaining({
-        workflowRunId: "run-1",
-        channel: "phone",
-        summary: expect.stringContaining("records are in process"),
-      }),
-    );
-    expect([...store.steps.values()].some((step) => step.id !== "step-1" && step.status === "due")).toBe(true);
+    expect(result.message).toContain("Follow-up call placed");
+    expect(placedCalls).toEqual([
+      { workflowRunId: "run-1", stepId: "step-1", now: new Date("2026-08-24T12:00:00.000Z") },
+    ]);
+    expect(store.steps.get("step-1")?.status).toBe("running");
+    expect(store.steps.get("step-1")?.payload).toMatchObject({
+      outboundCallId: "call-now-1",
+      awaitingCallCompletion: true,
+      requestedByUser: true,
+    });
   });
 
   it("refuses to run outreach while the workflow is waiting for human review", async () => {

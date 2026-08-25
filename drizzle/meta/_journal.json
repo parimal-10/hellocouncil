@@ -43,6 +43,13 @@
       "when": 1787582956435,
       "tag": "0005_follow_up_orchestration",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787664000000,
+      "tag": "0006_drop_synthetic_responses",
+      "breakpoints": true
     }
   ]
 }

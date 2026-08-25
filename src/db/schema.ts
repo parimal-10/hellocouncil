@@ -114,7 +114,6 @@ export const contactAttempts = pgTable("contact_attempts", {
   channel: text("channel").notNull(),
   outcome: text("outcome").notNull(),
   summary: text("summary").notNull(),
-  syntheticResponse: text("synthetic_response"),
   attemptedAt: timestamp("attempted_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

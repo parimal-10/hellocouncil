@@ -33,7 +33,7 @@ Run the worker in a separate terminal:
 npm run worker
 ```
 
-The worker requires the application environment to be configured and the Postgres database to be running.
+The worker requires the application environment to be configured and the Postgres database to be running. Set `AUTO_OUTBOUND_CALLS=true` (with the `TWILIO_*` variables and `PUBLIC_BASE_URL`) so due follow-up steps place real Twilio calls; there is no simulated fallback, and the worker refuses to start without it.
 
 ## LiveKit Voice Agent
 
@@ -76,6 +76,10 @@ npm run test:run
 npm run lint
 npm run build
 ```
+
+## Creating a Case
+
+Open `/cases`, fill in the matter, client, and optional provider contacts, and optionally pick a workflow. Saving the case creates the legal context and, when a workflow is selected, starts the run with its first follow-up step due immediately — the worker then places the outbound call autonomously and records the conversation outcome on the workflow timeline.
 
 ## Design Links
 

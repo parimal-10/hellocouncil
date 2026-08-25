@@ -80,7 +80,7 @@ export type WorkflowStore = {
     note: string;
     assignedUserId?: string;
   }): Promise<void>;
-  createContactAttempt(input: { workflowRunId: string; workflowStepId?: string; channel: string; outcome: string; summary: string; syntheticResponse?: string }): Promise<void>;
+  createContactAttempt(input: { workflowRunId: string; workflowStepId?: string; channel: string; outcome: string; summary: string }): Promise<void>;
 };
 
 export class DrizzleWorkflowStore implements WorkflowStore {
@@ -309,7 +309,7 @@ export class DrizzleWorkflowStore implements WorkflowStore {
     if (!review) throw new Error(`Review ${input.reviewRequestId} is not open or assigned.`);
   }
 
-  async createContactAttempt(input: { workflowRunId: string; workflowStepId?: string; channel: string; outcome: string; summary: string; syntheticResponse?: string }): Promise<void> {
+  async createContactAttempt(input: { workflowRunId: string; workflowStepId?: string; channel: string; outcome: string; summary: string }): Promise<void> {
     await this.client.insert(contactAttempts).values(input);
   }
 

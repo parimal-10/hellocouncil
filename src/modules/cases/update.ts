@@ -40,6 +40,98 @@ export type OrganizationUpdate = {
 
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; errors: Record<string, string> };
 
+export const WORKFLOW_DEFINITION_OPTIONS = ["medical-records-follow-up", "client-check-in"] as const;
+
+export type WorkflowDefinitionOption = (typeof WORKFLOW_DEFINITION_OPTIONS)[number];
+
+export type NewCaseInput = {
+  matterName: string;
+  status: CaseStatus;
+  assignedUserId: string;
+  clientName: string;
+  clientPhone: string | null;
+  clientEmail: string | null;
+  clientTimeZone: string | null;
+  providerName: string | null;
+  providerPhone: string | null;
+  workflowDefinitionId: WorkflowDefinitionOption | null;
+};
+
+export function parseNewCase(input: {
+  matterName: unknown;
+  status: unknown;
+  assignedUserId: unknown;
+  clientName: unknown;
+  clientPhone: unknown;
+  clientEmail: unknown;
+  clientTimeZone: unknown;
+  providerName: unknown;
+  providerPhone: unknown;
+  workflowDefinitionId: unknown;
+}): ParseResult<NewCaseInput> {
+  const caseResult = parseCaseUpdate({
+    matterName: input.matterName,
+    status: input.status,
+    assignedUserId: input.assignedUserId,
+  });
+  const errors: Record<string, string> = { ...(!caseResult.ok ? caseResult.errors : {}) };
+
+  const clientName = requiredText(input.clientName);
+  if (!clientName) errors.clientName = "Client name is required.";
+
+  const clientPhoneRaw = optionalText(input.clientPhone);
+  const clientPhone = clientPhoneRaw ? toE164(clientPhoneRaw) ?? clientPhoneRaw : null;
+
+  const clientEmail = optionalText(input.clientEmail);
+  if (clientEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientEmail)) {
+    errors.clientEmail = "Enter a valid email, or leave it blank.";
+  }
+
+  const clientTimeZoneRaw = optionalText(input.clientTimeZone);
+  let clientTimeZone: string | null = null;
+  if (clientTimeZoneRaw) {
+    if (!isValidIanaTimeZone(clientTimeZoneRaw)) {
+      errors.clientTimeZone = "Choose a valid IANA timezone.";
+    } else {
+      clientTimeZone = clientTimeZoneRaw;
+    }
+  }
+
+  const providerName = optionalText(input.providerName);
+  const providerPhoneRaw = optionalText(input.providerPhone);
+  const providerPhone = providerPhoneRaw ? toE164(providerPhoneRaw) ?? providerPhoneRaw : null;
+  if (!providerName && providerPhone) {
+    errors.providerName = "Provider name is required when a provider is added.";
+  }
+
+  const workflowDefinitionIdRaw = optionalText(input.workflowDefinitionId);
+  let workflowDefinitionId: WorkflowDefinitionOption | null = null;
+  if (workflowDefinitionIdRaw && workflowDefinitionIdRaw !== "none") {
+    if (!WORKFLOW_DEFINITION_OPTIONS.includes(workflowDefinitionIdRaw as WorkflowDefinitionOption)) {
+      errors.workflowDefinitionId = "Choose a valid workflow.";
+    } else {
+      workflowDefinitionId = workflowDefinitionIdRaw as WorkflowDefinitionOption;
+    }
+  }
+
+  if (Object.keys(errors).length > 0) return { ok: false, errors };
+  return {
+    ok: true,
+    value: {
+      matterName: caseResult.ok ? caseResult.value.matterName : "",
+      status: caseResult.ok ? caseResult.value.status : "active",
+      assignedUserId: caseResult.ok ? caseResult.value.assignedUserId : "",
+      clientName,
+      clientPhone,
+      clientEmail,
+      clientTimeZone,
+      providerName,
+      providerPhone,
+      workflowDefinitionId,
+    },
+  };
+}
+
 export function parseCaseUpdate(input: {
   matterName: unknown;
   status: unknown;

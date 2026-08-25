@@ -1,10 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { WorkflowEngine } from "@/modules/workflows/engine";
+import { WorkflowEngine, type OutboundFollowUpPort } from "@/modules/workflows/engine";
 import { clientCheckInDefinition, medicalRecordsFollowUpDefinition } from "@/modules/workflows/definitions";
 import type { WorkflowAction } from "@/modules/workflows/types";
 import { configureWorkflowQueues, jobNames, PgBossWorkflowStepScheduler } from "@/worker/boss";
 import { reconcileDueSteps } from "@/worker/reconcile-due-steps";
 import { TestWorkflowStore } from "./test-store";
+
+const definitions = [clientCheckInDefinition, medicalRecordsFollowUpDefinition];
+
+function fakeCaller(timeZone = "America/Chicago") {
+  const placedCalls: Array<{ workflowRunId: string; stepId: string; now: Date }> = [];
+  const caller: OutboundFollowUpPort = {
+    evaluateWindow: async () => ({ timeZone }),
+    placeCall: async (input) => {
+      placedCalls.push(input);
+      return { callId: `call-${placedCalls.length}` };
+    },
+  };
+  return { caller, placedCalls };
+}
 
 function storeWithRun(definitionId: "client-check-in" | "medical-records-follow-up") {
   const store = new TestWorkflowStore();
@@ -30,62 +44,40 @@ function storeWithRun(definitionId: "client-check-in" | "medical-records-follow-
 }
 
 describe("worker transitions", () => {
-  it("completes an allowed due step and schedules the next step", async () => {
+  it("places an automatic outbound call for a due step and awaits call completion", async () => {
     const store = storeWithRun("client-check-in");
-    const scheduledJobs: Array<{ stepId: string; runAt: Date }> = [];
+    const { caller, placedCalls } = fakeCaller();
     const engine = new WorkflowEngine({
       store,
-      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
-      syntheticResponses: {
-        client_check_in: "Client reports recovery is improving and has no questions.",
-      },
-      scheduler: {
-        scheduleDueStep: async (job) => {
-          scheduledJobs.push(job);
-          return "job-1";
-        },
-      },
+      definitions,
+      outboundCaller: caller,
     });
 
-    await engine.advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z"));
+    await engine.advanceDueStep("step-1", new Date("2026-08-24T15:00:00.000Z"));
 
-    expect(store.steps.get("step-1")?.status).toBe("completed");
-    expect([...store.steps.values()].some((step) => step.id !== "step-1" && step.status === "due")).toBe(true);
-    expect(store.events.map((event) => event.type)).toContain("step.completed");
-    expect(scheduledJobs).toEqual([{ stepId: "step-2", runAt: new Date("2026-08-26T01:00:00.000Z") }]);
-  });
-
-  it("blocks a due step and creates a review request when policy requires human review", async () => {
-    const store = storeWithRun("medical-records-follow-up");
-    const engine = new WorkflowEngine({
-      store,
-      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
-      syntheticResponses: {
-        provider_follow_up: "We cannot release anything without a new authorization.",
-      },
+    expect(placedCalls).toEqual([
+      { workflowRunId: "run-1", stepId: "step-1", now: new Date("2026-08-24T15:00:00.000Z") },
+    ]);
+    expect(store.steps.get("step-1")?.status).toBe("running");
+    expect(store.steps.get("step-1")?.payload).toMatchObject({
+      outboundCallId: "call-1",
+      awaitingCallCompletion: true,
     });
-
-    await engine.advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z"));
-
-    expect(store.steps.get("step-1")?.status).toBe("waiting_for_human");
-    expect(store.runs.get("run-1")?.status).toBe("waiting_for_human");
-    expect(store.reviews[0]?.decision.reason).toBe("provider_refusal");
-    expect(store.events.map((event) => event.type)).toContain("review.created");
+    expect(store.events.map((event) => event.type)).toContain("step.running");
   });
 
-  it("blocks a provider step without authorization before creating a contact attempt", async () => {
+  it("blocks a provider step without authorization before placing a call", async () => {
     const store = storeWithRun("medical-records-follow-up");
     store.steps.set("step-1", { ...store.steps.get("step-1")!, payload: { hasAuthorization: false } });
-    const engine = new WorkflowEngine({
-      store,
-      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
-    });
+    const { caller, placedCalls } = fakeCaller();
+    const engine = new WorkflowEngine({ store, definitions, outboundCaller: caller });
 
-    await engine.advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z"));
+    await engine.advanceDueStep("step-1", new Date("2026-08-24T15:00:00.000Z"));
 
     expect(store.steps.get("step-1")?.status).toBe("waiting_for_human");
     expect(store.reviews[0]?.decision.reason).toBe("missing_authorization");
     expect(store.contactAttempts).toHaveLength(0);
+    expect(placedCalls).toHaveLength(0);
   });
 
   it("ignores future and completed jobs without creating external effects", async () => {
@@ -96,10 +88,10 @@ describe("worker transitions", () => {
     });
     const completedStore = storeWithRun("client-check-in");
     completedStore.steps.set("step-1", { ...completedStore.steps.get("step-1")!, status: "completed" });
-    const definitions = [clientCheckInDefinition, medicalRecordsFollowUpDefinition];
+    const { caller } = fakeCaller();
 
-    await new WorkflowEngine({ store: futureStore, definitions }).advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z"));
-    await new WorkflowEngine({ store: completedStore, definitions }).advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z"));
+    await new WorkflowEngine({ store: futureStore, definitions, outboundCaller: caller }).advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z"));
+    await new WorkflowEngine({ store: completedStore, definitions, outboundCaller: caller }).advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z"));
 
     expect(futureStore.contactAttempts).toHaveLength(0);
     expect(completedStore.contactAttempts).toHaveLength(0);
@@ -107,55 +99,17 @@ describe("worker transitions", () => {
     expect(completedStore.steps.get("step-1")?.status).toBe("completed");
   });
 
-  it("does not block after three reached contacts", async () => {
-    const store = storeWithRun("medical-records-follow-up");
-    store.steps.set("step-1", {
-      ...store.steps.get("step-1")!,
-      attemptCount: 2,
-      payload: { failedAttemptCount: 0 },
-    });
-    const engine = new WorkflowEngine({
-      store,
-      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
-      scheduler: { scheduleDueStep: async () => "job-1" },
-    });
-
-    await engine.advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z"));
-
-    expect(store.steps.get("step-1")?.status).toBe("completed");
-    expect(store.reviews).toHaveLength(0);
-    expect(store.contactAttempts[0]?.outcome).toBe("reached");
-  });
-
   it("claims a due step once when duplicate workers advance it concurrently", async () => {
     const store = storeWithRun("client-check-in");
-    const engine = new WorkflowEngine({
-      store,
-      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
-      scheduler: { scheduleDueStep: async () => "job-1" },
-    });
-    const now = new Date("2026-08-23T01:00:00.000Z");
+    const { caller, placedCalls } = fakeCaller();
+    const engine = new WorkflowEngine({ store, definitions, outboundCaller: caller });
+    const now = new Date("2026-08-24T15:00:00.000Z");
 
     await Promise.all([engine.advanceDueStep("step-1", now), engine.advanceDueStep("step-1", now)]);
 
-    expect(store.contactAttempts).toHaveLength(1);
+    expect(placedCalls).toHaveLength(1);
     expect(store.steps.get("step-1")?.attemptCount).toBe(1);
-    expect(store.steps.get("step-1")?.status).toBe("completed");
-  });
-
-  it("leaves the run active and created step due when scheduler returns no job id", async () => {
-    const store = storeWithRun("client-check-in");
-    const engine = new WorkflowEngine({
-      store,
-      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
-      scheduler: { scheduleDueStep: async () => "" },
-    });
-
-    await engine.advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z"));
-
-    expect(store.runs.get("run-1")?.status).toBe("active");
-    expect(store.steps.get("step-2")?.status).toBe("due");
-    expect(store.events.map((event) => event.type)).toContain("step.schedule_failed");
+    expect(store.steps.get("step-1")?.status).toBe("running");
   });
 
   it("does not reject an existing standard due-step queue", async () => {
@@ -357,144 +311,6 @@ describe("worker transitions", () => {
     ]);
   });
 
-  it("blocks after the third failed contact", async () => {
-    const store = storeWithRun("medical-records-follow-up");
-    store.steps.set("step-1", { ...store.steps.get("step-1")!, payload: { failedAttemptCount: 2 } });
-    const engine = new WorkflowEngine({
-      store,
-      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
-      syntheticResponses: { provider_follow_up: "No response from provider." },
-    });
-
-    await engine.advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z"));
-
-    expect(store.steps.get("step-1")?.status).toBe("waiting_for_human");
-    expect(store.reviews[0]?.decision.reason).toBe("failed_contact_threshold");
-    expect(store.contactAttempts[0]?.outcome).toBe("failed");
-  });
-
-  it("blocks ambiguous client responses", async () => {
-    const store = storeWithRun("client-check-in");
-    const engine = new WorkflowEngine({
-      store,
-      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
-      syntheticResponses: { client_check_in: "Maybe, I am not sure what to do." },
-    });
-
-    await engine.advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z"));
-
-    expect(store.reviews[0]?.decision.reason).toBe("ambiguous_client_response");
-  });
-
-  it("blocks sensitive legal advice responses", async () => {
-    const store = storeWithRun("client-check-in");
-    const engine = new WorkflowEngine({
-      store,
-      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
-      syntheticResponses: { client_check_in: "Should I sign the settlement?" },
-    });
-
-    await engine.advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z"));
-
-    expect(store.reviews[0]?.decision.reason).toBe("sensitive_legal_advice");
-  });
-
-  it("returns a claimed step to due when processing throws so it can be retried", async () => {
-    class FailingContactStore extends TestWorkflowStore {
-      failNextContactAttempt = true;
-
-      override async createContactAttempt(input: Parameters<TestWorkflowStore["createContactAttempt"]>[0]) {
-        if (this.failNextContactAttempt) {
-          this.failNextContactAttempt = false;
-          throw new Error("contact persistence unavailable");
-        }
-        return super.createContactAttempt(input);
-      }
-    }
-
-    const store = new FailingContactStore();
-    store.runs.set("run-1", {
-      id: "run-1",
-      definitionId: "medical-records-follow-up",
-      caseId: "case-1",
-      status: "active",
-      title: "Test run",
-      summary: "",
-    });
-    store.steps.set("step-1", {
-      id: "step-1",
-      workflowRunId: "run-1",
-      stepType: "provider_follow_up",
-      label: "Due step",
-      status: "due",
-      dueAt: new Date("2026-08-23T00:00:00.000Z"),
-      attemptCount: 0,
-      payload: {},
-    });
-    const engine = new WorkflowEngine({
-      store,
-      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
-      syntheticResponses: { provider_follow_up: "Records are ready for pickup." },
-    });
-    const now = new Date("2026-08-23T01:00:00.000Z");
-
-    await expect(engine.advanceDueStep("step-1", now)).rejects.toThrow("contact persistence unavailable");
-
-    expect(store.steps.get("step-1")?.status).toBe("due");
-    expect(store.events).toContainEqual(
-      expect.objectContaining({ workflowRunId: "run-1", type: "step.processing_failed" }),
-    );
-
-    await expect(engine.advanceDueStep("step-1", now)).resolves.toBeUndefined();
-    expect(store.steps.get("step-1")?.status).toBe("completed");
-  });
-
-  it("fails a claimed step after its processing retry limit is exhausted", async () => {
-    class FailingContactStore extends TestWorkflowStore {
-      override async createContactAttempt() {
-        throw new Error("contact persistence unavailable");
-      }
-    }
-
-    const store = new FailingContactStore();
-    store.runs.set("run-1", {
-      id: "run-1",
-      definitionId: "medical-records-follow-up",
-      caseId: "case-1",
-      status: "active",
-      title: "Test run",
-      summary: "",
-    });
-    store.steps.set("step-1", {
-      id: "step-1",
-      workflowRunId: "run-1",
-      stepType: "provider_follow_up",
-      label: "Due step",
-      status: "due",
-      dueAt: new Date("2026-08-23T00:00:00.000Z"),
-      attemptCount: 3,
-      payload: {},
-    });
-    const engine = new WorkflowEngine({
-      store,
-      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
-      syntheticResponses: { provider_follow_up: "Records are ready for pickup." },
-    });
-
-    await expect(
-      engine.advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z")),
-    ).rejects.toThrow("contact persistence unavailable");
-
-    expect(store.steps.get("step-1")?.status).toBe("failed");
-    expect(store.runs.get("run-1")?.status).toBe("failed");
-    expect(store.events).toContainEqual(
-      expect.objectContaining({
-        type: "step.processing_failed",
-        payload: expect.objectContaining({ retryLimit: 3, retryable: false }),
-      }),
-    );
-  });
-
   it("resolves a blocked step through a controlled review action", async () => {
     const store = storeWithRun("medical-records-follow-up");
     store.runs.set("run-2", {
@@ -518,11 +334,7 @@ describe("worker transitions", () => {
         summary: "Provider refused.",
       },
     });
-    const engine = new WorkflowEngine({
-      store,
-      definitions: [clientCheckInDefinition, medicalRecordsFollowUpDefinition],
-      syntheticResponses: {},
-    });
+    const engine = new WorkflowEngine({ store, definitions });
 
     const tamperedAction = {
       type: "resolve_blocked_step",
@@ -607,5 +419,106 @@ describe("worker transitions", () => {
 
     expect(store.reviews[0]?.status).toBe("open");
     expect(store.events.map((event) => event.type)).not.toContain("review.assigned");
+  });
+
+  it("defers an autonomous due step outside local business hours without placing a call", async () => {
+    const store = storeWithRun("client-check-in");
+    const { caller, placedCalls } = fakeCaller("America/Chicago");
+    const engine = new WorkflowEngine({ store, definitions, outboundCaller: caller });
+    // 2026-08-23T01:00:00Z is Saturday 20:00 in America/Chicago.
+    const now = new Date("2026-08-23T01:00:00.000Z");
+
+    await engine.advanceDueStep("step-1", now);
+
+    expect(placedCalls).toHaveLength(0);
+    expect(store.steps.get("step-1")?.status).toBe("due");
+    expect(store.steps.get("step-1")?.dueAt).toEqual(new Date("2026-08-24T14:00:00.000Z"));
+    expect(store.events.map((event) => event.type)).toContain("scheduling.decision");
+  });
+
+  it("places the call immediately for an explicitly requested follow-up outside business hours", async () => {
+    const store = storeWithRun("client-check-in");
+    store.steps.set("step-1", {
+      ...store.steps.get("step-1")!,
+      payload: { requestedByUser: true },
+    });
+    const { caller, placedCalls } = fakeCaller("America/Chicago");
+    const engine = new WorkflowEngine({ store, definitions, outboundCaller: caller });
+    // 2026-08-23T01:00:00Z is Saturday 20:00 in America/Chicago.
+    const now = new Date("2026-08-23T01:00:00.000Z");
+
+    await engine.advanceDueStep("step-1", now);
+
+    expect(placedCalls).toHaveLength(1);
+    expect(store.steps.get("step-1")?.status).toBe("running");
+    expect(store.steps.get("step-1")?.payload).toMatchObject({ awaitingCallCompletion: true });
+  });
+
+  it("returns a claimed step to due when placing the call throws so it can be retried", async () => {
+    const store = storeWithRun("medical-records-follow-up");
+    let failNextCall = true;
+    let callCount = 0;
+    const caller: OutboundFollowUpPort = {
+      evaluateWindow: async () => ({ timeZone: "America/Chicago" }),
+      placeCall: async () => {
+        callCount += 1;
+        if (failNextCall) {
+          failNextCall = false;
+          throw new Error("twilio unavailable");
+        }
+        return { callId: `call-${callCount}` };
+      },
+    };
+    const engine = new WorkflowEngine({ store, definitions, outboundCaller: caller });
+    const now = new Date("2026-08-24T15:00:00.000Z");
+
+    await expect(engine.advanceDueStep("step-1", now)).rejects.toThrow("twilio unavailable");
+
+    expect(store.steps.get("step-1")?.status).toBe("due");
+    expect(store.events).toContainEqual(
+      expect.objectContaining({ workflowRunId: "run-1", type: "step.processing_failed" }),
+    );
+
+    await expect(engine.advanceDueStep("step-1", now)).resolves.toBeUndefined();
+    expect(store.steps.get("step-1")?.status).toBe("running");
+    expect(store.steps.get("step-1")?.payload).toMatchObject({ awaitingCallCompletion: true });
+  });
+
+  it("fails a claimed step after its processing retry limit is exhausted", async () => {
+    const store = storeWithRun("medical-records-follow-up");
+    store.steps.set("step-1", { ...store.steps.get("step-1")!, attemptCount: 3 });
+    const failingCaller: OutboundFollowUpPort = {
+      evaluateWindow: async () => ({ timeZone: "America/Chicago" }),
+      placeCall: async () => {
+        throw new Error("twilio unavailable");
+      },
+    };
+    const engine = new WorkflowEngine({ store, definitions, outboundCaller: failingCaller });
+
+    await expect(
+      engine.advanceDueStep("step-1", new Date("2026-08-24T15:00:00.000Z")),
+    ).rejects.toThrow("twilio unavailable");
+
+    expect(store.steps.get("step-1")?.status).toBe("failed");
+    expect(store.runs.get("run-1")?.status).toBe("failed");
+    expect(store.events).toContainEqual(
+      expect.objectContaining({
+        type: "step.processing_failed",
+        payload: expect.objectContaining({ retryLimit: 3, retryable: false }),
+      }),
+    );
+  });
+
+  it("fails a claimed step when automatic outbound calling is not configured", async () => {
+    const store = storeWithRun("client-check-in");
+    const engine = new WorkflowEngine({ store, definitions });
+
+    await expect(
+      engine.advanceDueStep("step-1", new Date("2026-08-23T01:00:00.000Z")),
+    ).rejects.toThrow("Automatic outbound calling is not configured");
+
+    expect(store.events).toContainEqual(
+      expect.objectContaining({ workflowRunId: "run-1", type: "step.processing_failed" }),
+    );
   });
 });

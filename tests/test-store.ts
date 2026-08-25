@@ -192,7 +192,7 @@ export class TestWorkflowStore implements WorkflowStore {
     }
   }
 
-  async createContactAttempt(input: { workflowRunId: string; workflowStepId?: string; channel: string; outcome: string; summary: string; syntheticResponse?: string }) {
+  async createContactAttempt(input: { workflowRunId: string; workflowStepId?: string; channel: string; outcome: string; summary: string }) {
     this.contactAttempts.push(input);
   }
 

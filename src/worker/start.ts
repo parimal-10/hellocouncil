@@ -6,28 +6,24 @@ import { reconcileDueSteps } from "./reconcile-due-steps";
 import { runDueStepJob, type RunDueStepJob } from "./run-due-step";
 import type { OutboundFollowUpPort } from "@/modules/workflows/engine";
 
-function loadOutboundCaller(): OutboundFollowUpPort | undefined {
+function loadOutboundCaller(): OutboundFollowUpPort {
   if (!isAutomaticOutboundCallingEnabled()) {
-    console.log("Automatic outbound calling is off. Due steps use the synthetic follow-up path.");
-    return undefined;
+    throw new Error(
+      "AUTO_OUTBOUND_CALLS=true is required. Due follow-ups place real Twilio calls; there is no simulated fallback.",
+    );
   }
-  try {
-    const caller = createWorkerOutboundDialer();
-    console.log("Automatic outbound calling is enabled. Due phone follow-ups place Twilio calls.");
-    return caller;
-  } catch (error) {
-    console.warn("AUTO_OUTBOUND_CALLS is set but phone runtime is not configured; using synthetic follow-ups.", error);
-    return undefined;
-  }
+  return createWorkerOutboundDialer();
 }
 
 async function main() {
+  const outboundCaller = loadOutboundCaller();
+  console.log("Automatic outbound calling is enabled. Due phone follow-ups place Twilio calls.");
+
   const boss = createBoss();
   await boss.start();
   await configureWorkflowQueues(boss);
   const scheduler = new PgBossWorkflowStepScheduler(boss);
   const store = new DrizzleWorkflowStore();
-  const outboundCaller = loadOutboundCaller();
   const reconcile = () => reconcileDueSteps({ store, scheduler, now: new Date() });
 
   await reconcile();

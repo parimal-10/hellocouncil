@@ -1,10 +1,35 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { updateCaseRecord, updateOrganizationRecord, updatePersonRecord } from "@/modules/cases/store";
-import { parseCaseUpdate, parseOrganizationUpdate, parsePersonUpdate } from "@/modules/cases/update";
+import { redirect } from "next/navigation";
+import { createCaseRecord, updateCaseRecord, updateOrganizationRecord, updatePersonRecord } from "@/modules/cases/store";
+import { parseCaseUpdate, parseNewCase, parseOrganizationUpdate, parsePersonUpdate } from "@/modules/cases/update";
 
-export type CaseActionState = { ok: true } | { ok: false; errors: Record<string, string> } | null;
+export type CaseActionState = { ok: true; caseId?: string } | { ok: false; errors: Record<string, string> } | null;
+
+export async function createCaseAction(_prev: CaseActionState, formData: FormData): Promise<CaseActionState> {
+  const parsed = parseNewCase({
+    matterName: formData.get("matterName"),
+    status: formData.get("status"),
+    assignedUserId: formData.get("assignedUserId"),
+    clientName: formData.get("clientName"),
+    clientPhone: formData.get("clientPhone"),
+    clientEmail: formData.get("clientEmail"),
+    clientTimeZone: formData.get("clientTimeZone"),
+    providerName: formData.get("providerName"),
+    providerPhone: formData.get("providerPhone"),
+    workflowDefinitionId: formData.get("workflowDefinitionId"),
+  });
+  if (!parsed.ok) return parsed;
+  let caseId: string;
+  try {
+    caseId = await createCaseRecord(parsed.value);
+  } catch (error) {
+    return { ok: false, errors: { form: error instanceof Error ? error.message : "Could not create the case." } };
+  }
+  revalidateCasePaths(caseId);
+  redirect(`/cases/${caseId}`);
+}
 
 export async function updateCaseAction(_prev: CaseActionState, formData: FormData): Promise<CaseActionState> {
   const caseId = requiredId(formData, "caseId");

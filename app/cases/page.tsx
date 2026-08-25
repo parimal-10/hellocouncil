@@ -1,10 +1,11 @@
 import { CaseDirectory } from "./case-directory";
-import { listCaseDirectory } from "@/modules/cases/store";
+import { NewCaseForm } from "./new-case-form";
+import { listCaseDirectory, listFirmUsers } from "@/modules/cases/store";
 
 export const dynamic = "force-dynamic";
 
 export default async function CasesPage() {
-  const cases = await listCaseDirectory();
+  const [cases, firmUsers] = await Promise.all([listCaseDirectory(), listFirmUsers()]);
 
   return (
     <div className="space-y-6">
@@ -14,6 +15,7 @@ export default async function CasesPage() {
           Legal context for every matter: clients, providers, owners, and the contact details outbound calling uses.
         </p>
       </div>
+      <NewCaseForm firmUsers={firmUsers} />
       <CaseDirectory cases={cases} />
     </div>
   );

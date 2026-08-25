@@ -203,11 +203,12 @@ describe("decideNextFollowUp after a call", () => {
 });
 
 describe("automatic outbound calling gate", () => {
-  it("stays off unless AUTO_OUTBOUND_CALLS=true and the process is local or test", () => {
-    expect(isAutomaticOutboundCallingEnabled({ NODE_ENV: "development" })).toBe(false);
-    expect(isAutomaticOutboundCallingEnabled({ NODE_ENV: "production", AUTO_OUTBOUND_CALLS: "true" })).toBe(false);
-    expect(isAutomaticOutboundCallingEnabled({ NODE_ENV: "development", AUTO_OUTBOUND_CALLS: "true" })).toBe(true);
-    expect(isAutomaticOutboundCallingEnabled({ NODE_ENV: "test", AUTO_OUTBOUND_CALLS: "true" })).toBe(true);
-    expect(isAutomaticOutboundCallingEnabled({ AUTO_OUTBOUND_CALLS: "true" })).toBe(true);
+  it("is on exactly when AUTO_OUTBOUND_CALLS=true, regardless of environment", () => {
+    const env = (values: Record<string, string>) => values as unknown as NodeJS.ProcessEnv;
+    expect(isAutomaticOutboundCallingEnabled(env({}))).toBe(false);
+    expect(isAutomaticOutboundCallingEnabled(env({ AUTO_OUTBOUND_CALLS: "false" }))).toBe(false);
+    expect(isAutomaticOutboundCallingEnabled(env({ AUTO_OUTBOUND_CALLS: "true" }))).toBe(true);
+    expect(isAutomaticOutboundCallingEnabled(env({ NODE_ENV: "production", AUTO_OUTBOUND_CALLS: "true" }))).toBe(true);
+    expect(isAutomaticOutboundCallingEnabled(env({ NODE_ENV: "test", AUTO_OUTBOUND_CALLS: "true" }))).toBe(true);
   });
 });

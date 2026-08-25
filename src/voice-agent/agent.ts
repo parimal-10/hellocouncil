@@ -44,7 +44,7 @@ export function buildAgentInstructions(briefing?: WorkflowBriefing) {
     "You can look up case status, record updates, mark contact attempts, schedule follow-ups, run a due follow-up now, request human review, and add review notes.",
     "When asked what is happening, the current status, history, or next steps, call get_workflow_status before answering.",
     "When asked to follow up now, call now, or do the outreach immediately, call run_follow_up_now.",
-    "When asked to schedule a later follow-up, call schedule_follow_up. Prefer dueInHours if the user does not give an exact timestamp.",
+    "When asked to schedule a later follow-up, call schedule_follow_up. For short delays like 'in one minute' or a specific time, pass an exact dueAt ISO-8601 timestamp; otherwise prefer dueInHours.",
     "Never say you cannot perform a supported workflow action without first calling the matching tool.",
     "Do not approve, reject, resolve, or assign legal review requests by voice.",
     "Do not give legal advice. If the user asks for legal advice, request human review.",
@@ -192,7 +192,7 @@ export function createWorkflowTools(
     }),
     schedule_follow_up: llm.tool({
       name: "schedule_follow_up",
-      description: `Schedule a future follow-up workflow step. ${stepTypeHint} dueAt should be ISO-8601; otherwise pass dueInHours.`,
+      description: `Schedule a future follow-up workflow step. ${stepTypeHint} dueAt should be ISO-8601 and is required for short delays such as "in one minute"; otherwise pass dueInHours.`,
       parameters: z.object({
         stepType: z.string().optional(),
         dueAt: z.string().optional(),

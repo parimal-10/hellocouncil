@@ -1,9 +1,9 @@
 import { routeWorkflowAction, type WorkflowActionResult } from "@/modules/workflows/action-router";
 import { loadWorkflowBriefing } from "@/modules/workflows/briefing";
 import { getWorkflowDefinition, workflowDefinitions } from "@/modules/workflows/definitions";
-import { WorkflowEngine } from "@/modules/workflows/engine";
+import { WorkflowEngine, type OutboundFollowUpPort } from "@/modules/workflows/engine";
 import type { WorkflowStore } from "@/modules/workflows/store";
-import type { VoiceSessionPersistence } from "@/modules/voice/session-runner";
+import type { VoiceSessionPersistence } from "@/modules/voice/store";
 import type { ReviewBlockReason, WorkflowAction, WorkflowDefinition } from "@/modules/workflows/types";
 
 export const voiceToolNames = [
@@ -44,6 +44,7 @@ export async function executeVoiceWorkflowTool(input: {
   voiceSessionId?: string;
   toolCallId?: string;
   loadBriefing?: typeof loadWorkflowBriefing;
+  outboundCaller?: OutboundFollowUpPort;
   now?: Date;
 }): Promise<WorkflowActionResult> {
   const eventContext = voiceEventContext(input);
@@ -92,7 +93,11 @@ export async function executeVoiceWorkflowTool(input: {
       const briefing = await (input.loadBriefing ?? loadWorkflowBriefing)(workflowRunId, input.now);
       result = { ok: true, message: briefing.spokenSummary };
     } else if (input.toolName === "run_follow_up_now") {
-      const engine = new WorkflowEngine({ store, definitions: workflowDefinitions });
+      const engine = new WorkflowEngine({
+        store,
+        definitions: workflowDefinitions,
+        outboundCaller: input.outboundCaller ?? (await resolveOutboundCaller()),
+      });
       result = await engine.runFollowUpNow(workflowRunId, input.now ?? new Date());
     } else {
       const action = toWorkflowAction(workflowRunId, input.toolName, input.payload);
@@ -121,7 +126,11 @@ export async function executeVoiceWorkflowTool(input: {
           `Step type ${resolvedAction.stepType} is not defined for workflow ${definition.id}. Valid step types: ${definition.stepTemplates.map((step) => step.type).join(", ")}.`,
         );
       }
-      const engine = new WorkflowEngine({ store, definitions: workflowDefinitions });
+      const engine = new WorkflowEngine({
+        store,
+        definitions: workflowDefinitions,
+        outboundCaller: input.outboundCaller ?? (await resolveOutboundCaller()),
+      });
       result = await routeWorkflowAction({ action: resolvedAction, definition, engine });
     }
   } catch (error) {
@@ -155,6 +164,19 @@ export async function executeVoiceWorkflowTool(input: {
 async function defaultWorkflowStore() {
   const { DrizzleWorkflowStore } = await import("@/modules/workflows/store");
   return new DrizzleWorkflowStore();
+}
+
+async function resolveOutboundCaller(): Promise<OutboundFollowUpPort | undefined> {
+  const [{ isAutomaticOutboundCallingEnabled }, { createWorkerOutboundDialer }] = await Promise.all([
+    import("@/modules/phone/auto-dial"),
+    import("@/modules/phone/worker-dialer"),
+  ]);
+  if (!isAutomaticOutboundCallingEnabled()) return undefined;
+  try {
+    return createWorkerOutboundDialer();
+  } catch {
+    return undefined;
+  }
 }
 
 function isVoiceToolName(value: string): value is VoiceToolName {

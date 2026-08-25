@@ -259,7 +259,7 @@ describe("voice agent tools", () => {
     });
   });
 
-  it("runs the next follow-up immediately through the workflow engine", async () => {
+  it("runs the next follow-up immediately by placing the outbound call", async () => {
     const store = storeWithRun();
     store.steps.set("step-1", {
       id: "step-1",
@@ -271,18 +271,29 @@ describe("voice agent tools", () => {
       attemptCount: 0,
       payload: {},
     });
+    const placedCalls: Array<{ workflowRunId: string; stepId: string }> = [];
 
     const result = await executeVoiceWorkflowTool({
       workflowRunId: "run-1",
       toolName: "run_follow_up_now",
       payload: {},
       store,
-      now: new Date("2026-08-24T10:00:00.000Z"),
+      outboundCaller: {
+        evaluateWindow: async () => ({ timeZone: "America/New_York" }),
+        placeCall: async (input) => {
+          placedCalls.push(input);
+          return { callId: "call-voice-1" };
+        },
+      },
+      now: new Date("2026-08-24T15:00:00.000Z"),
     });
 
     expect(result.ok).toBe(true);
-    expect(result.message).toContain("Follow-up completed.");
-    expect(store.steps.get("step-1")?.status).toBe("completed");
+    expect(result.message).toContain("Follow-up call placed");
+    expect(placedCalls).toEqual([
+      { workflowRunId: "run-1", stepId: "step-1", now: new Date("2026-08-24T15:00:00.000Z") },
+    ]);
+    expect(store.steps.get("step-1")?.status).toBe("running");
   });
 
   it("routes add_review_note only when the review belongs to the active run", async () => {

@@ -10,8 +10,116 @@ import {
   phoneCalls,
   workflowEvents,
   workflowRuns,
+  workflowSteps,
 } from "@/db/schema";
-import type { CaseUpdate, OrganizationUpdate, PersonUpdate } from "./update";
+import type { NewCaseInput, CaseUpdate, OrganizationUpdate, PersonUpdate } from "./update";
+
+export async function listFirmUsers() {
+  return db
+    .select({ id: people.id, name: people.name })
+    .from(people)
+    .where(eq(people.role, "firm_user"))
+    .orderBy(asc(people.name));
+}
+
+export async function createCaseRecord(input: NewCaseInput) {
+  const [owner] = await db
+    .select({ id: people.id })
+    .from(people)
+    .where(and(eq(people.id, input.assignedUserId), eq(people.role, "firm_user")))
+    .limit(1);
+  if (!owner) throw new Error("Assigned user must be a firm user.");
+
+  const [client] = await db
+    .insert(people)
+    .values({
+      name: input.clientName,
+      role: "client",
+      phone: input.clientPhone,
+      email: input.clientEmail,
+      timeZone: input.clientTimeZone,
+      timeZoneSource: input.clientTimeZone ? "explicit" : null,
+    })
+    .returning();
+
+  let providerOrganization: { id: string; name: string } | undefined;
+  if (input.providerName) {
+    const [organization] = await db
+      .insert(organizations)
+      .values({
+        name: input.providerName,
+        type: "medical_provider",
+        phone: input.providerPhone,
+      })
+      .returning({ id: organizations.id, name: organizations.name });
+    providerOrganization = organization;
+  }
+
+  const [caseRecord] = await db
+    .insert(cases)
+    .values({
+      matterName: input.matterName,
+      status: input.status,
+      assignedUserId: input.assignedUserId,
+    })
+    .returning();
+
+  await db.insert(caseParticipants).values([
+    { caseId: caseRecord.id, personId: client.id, role: "client" },
+    ...(providerOrganization
+      ? [{ caseId: caseRecord.id, organizationId: providerOrganization.id, role: "medical_provider" }]
+      : []),
+  ]);
+
+  if (input.workflowDefinitionId) {
+    const definitionId = input.workflowDefinitionId;
+    const firstStepType =
+      definitionId === "client-check-in" ? "client_check_in" : "provider_follow_up";
+    const label =
+      definitionId === "client-check-in" ? "Check in with client" : "Follow up with provider";
+    const title = `${definitionId === "client-check-in" ? "Client check-in" : "Medical records follow-up"} for ${input.matterName}`;
+
+    const [run] = await db
+      .insert(workflowRuns)
+      .values({
+        definitionId,
+        caseId: caseRecord.id,
+        status: "active",
+        title,
+        summary:
+          definitionId === "client-check-in"
+            ? `Periodic check-ins with ${input.clientName}.`
+            : providerOrganization
+              ? `Follow up with ${providerOrganization.name} for records status.`
+              : "Follow up with the medical provider for records status.",
+      })
+      .returning();
+
+    await db.insert(workflowSteps).values({
+      workflowRunId: run.id,
+      stepType: firstStepType,
+      label,
+      status: "due",
+      dueAt: new Date(),
+      payload: {
+        reason: "Workflow started from case creation.",
+        requestedByUser: false,
+        clientName: input.clientName,
+        providerName: providerOrganization?.name ?? null,
+      },
+    });
+
+    await db.insert(workflowEvents).values({
+      workflowRunId: run.id,
+      type: "workflow.started",
+      summary: `${title} started.`,
+      actorType: "system",
+      payload: {},
+    });
+  }
+
+  return caseRecord.id;
+}
 
 export async function updateCaseRecord(caseId: string, update: CaseUpdate) {
   const [owner] = await db
@@ -248,7 +356,6 @@ export async function getCaseFile(caseId: string) {
       channel: attempt.channel,
       outcome: attempt.outcome,
       summary: attempt.summary,
-      syntheticResponse: attempt.syntheticResponse,
       attemptedAt: attempt.attemptedAt.toISOString(),
     })),
     reviews: reviewRows.map((review) => ({

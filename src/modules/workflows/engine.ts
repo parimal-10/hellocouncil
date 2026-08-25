@@ -1,8 +1,7 @@
 import type { FollowUpDecision } from "@/modules/phone/follow-up-policy";
 import { decideAttemptWindow } from "@/modules/phone/follow-up-policy";
-import { getSyntheticResponse } from "./synthetic-responses";
 import type { WorkflowRunRecord, WorkflowStepRecord, WorkflowStore } from "./store";
-import type { ReviewDecision, WorkflowAction, WorkflowDefinition, WorkflowSignal } from "./types";
+import type { ReviewDecision, WorkflowAction, WorkflowDefinition } from "./types";
 
 export type WorkflowStepScheduler = {
   scheduleDueStep(input: { stepId: string; runAt: Date }): Promise<string>;
@@ -20,7 +19,6 @@ export class WorkflowEngine {
     private readonly input: {
       store: WorkflowStore;
       definitions: readonly WorkflowDefinition[];
-      syntheticResponses?: Record<string, string>;
       scheduler?: WorkflowStepScheduler;
       outboundCaller?: OutboundFollowUpPort;
     },
@@ -40,8 +38,11 @@ export class WorkflowEngine {
     const existing = await this.input.store.getStep(stepId);
     if (existing.status !== "due" || existing.dueAt > now) return;
 
-    if (this.shouldAutoDial(existing)) {
-      const { timeZone } = await this.input.outboundCaller!.evaluateWindow({
+    // Explicitly requested follow-ups (voice agent, reviewer, case creation) honor the
+    // requested instant and are never deferred to the business-hours window.
+    const explicitlyRequested = this.payloadBoolean(existing.payload, "requestedByUser", false);
+    if (!explicitlyRequested && this.input.outboundCaller && this.shouldAutoDial(existing)) {
+      const { timeZone } = await this.input.outboundCaller.evaluateWindow({
         workflowRunId: existing.workflowRunId,
         now,
       });
@@ -61,95 +62,31 @@ export class WorkflowEngine {
     if (!step) return;
 
     try {
-      if (this.shouldAutoDial(step)) {
-        await this.placeAutoDial(step, now);
-        return;
-      }
-
       const run = await this.input.store.getRun(step.workflowRunId);
-      const definition = this.definitionFor(run.definitionId);
-
-      await this.input.store.appendEvent({
-        workflowRunId: run.id,
-        type: "step.running",
-        summary: `${step.label} started.`,
-        actorType: "worker",
-        payload: { stepId: step.id, stepType: step.stepType },
-      });
-
-      const syntheticResponse = getSyntheticResponse(step.stepType, this.input.syntheticResponses);
-      const outcome = this.outcomeForResponse(syntheticResponse);
-      const signal = this.signalForStep(step.stepType, syntheticResponse, this.failedAttemptCount(step.payload, outcome), step.payload);
-      const decision = definition.reviewPolicy(signal);
-
-      if (decision.kind === "block" && decision.reason === "missing_authorization") {
-        await this.blockStep(run.id, step.id, step.attemptCount, decision);
+      if (
+        step.stepType === "provider_follow_up"
+        && !this.payloadBoolean(step.payload, "hasAuthorization", true)
+      ) {
+        await this.blockStep(run.id, step.id, step.attemptCount, {
+          kind: "block",
+          reason: "missing_authorization",
+          severity: "high",
+          recommendedAction: "Verify authorization before contacting the provider again.",
+          summary: "Provider outreach is blocked until authorization is verified.",
+        });
         return;
       }
 
-      await this.input.store.createContactAttempt({
-        workflowRunId: run.id,
-        workflowStepId: step.id,
-        channel: signal.channel,
-        outcome,
-        summary: `Synthetic ${signal.channel} attempt: ${syntheticResponse}`,
-        syntheticResponse,
-      });
-
-      if (decision.kind === "block") {
-        await this.blockStep(run.id, step.id, step.attemptCount, decision);
-        return;
+      if (!this.input.outboundCaller) {
+        throw new Error(
+          "Automatic outbound calling is not configured. Due follow-ups place real Twilio calls; set AUTO_OUTBOUND_CALLS=true with a phone runtime.",
+        );
+      }
+      if (!this.shouldAutoDial(step)) {
+        throw new Error(`Step type ${step.stepType} has no outbound calling path.`);
       }
 
-      await this.input.store.updateStepStatus(step.id, "completed", step.attemptCount);
-      await this.input.store.updateRunStatus(run.id, "active", syntheticResponse);
-      await this.input.store.appendEvent({
-        workflowRunId: run.id,
-        type: "step.completed",
-        summary: syntheticResponse,
-        actorType: "worker",
-        payload: { stepId: step.id, stepType: step.stepType },
-      });
-
-      const nextStep = definition.scheduleNextStep({
-        completedStepType: step.stepType,
-        now,
-        signal,
-      });
-
-      if (nextStep) {
-        const dueAt = new Date(now.getTime() + nextStep.defaultDueInHours * 60 * 60 * 1000);
-        const scheduledStep = await this.input.store.createStep({
-          workflowRunId: run.id,
-          stepType: nextStep.type,
-          label: nextStep.label,
-          dueAt,
-          payload: { failedAttemptCount: signal.attemptCount },
-        });
-        try {
-          const jobId = await this.input.scheduler?.scheduleDueStep({ stepId: scheduledStep.id, runAt: dueAt });
-          if (!jobId) throw new Error("Due-step scheduler did not return a job id.");
-          await this.input.store.markDueStepScheduled(scheduledStep.id, now);
-        } catch (error) {
-          await this.markScheduleFailed(run.id, scheduledStep.id, error);
-          return;
-        }
-        await this.input.store.appendEvent({
-          workflowRunId: run.id,
-          type: "step.scheduled",
-          summary: `${nextStep.label} scheduled.`,
-          actorType: "worker",
-          payload: { stepType: nextStep.type, dueAt: dueAt.toISOString() },
-        });
-      } else {
-        await this.input.store.updateRunStatus(run.id, "completed", "Workflow completed.");
-        await this.input.store.appendEvent({
-          workflowRunId: run.id,
-          type: "workflow.completed",
-          summary: "Workflow completed.",
-          actorType: "worker",
-        });
-      }
+      await this.placeAutoDial(step, now);
     } catch (error) {
       await this.recoverClaimedStep(step, error);
       throw error;
@@ -187,16 +124,27 @@ export class WorkflowEngine {
         stepType: template.type,
         label: template.label,
         dueAt: now,
-        payload: { reason: "Immediate follow-up requested." },
+        payload: { reason: "Immediate follow-up requested.", requestedByUser: true },
       });
     } else if (step.dueAt > now) {
+      await this.input.store.updateStepPayload(step.id, { requestedByUser: true });
       await this.input.store.rescheduleStep(step.id, now);
     }
 
-    await this.advanceDueStep(step.id, now);
+    try {
+      await this.advanceDueStep(step.id, now);
+    } catch (error) {
+      return {
+        ok: false,
+        message: `The follow-up could not be executed: ${error instanceof Error ? error.message : "unknown error."}`,
+      };
+    }
     const after = await this.input.store.getStep(step.id);
     if (after.status === "due") {
       return { ok: false, message: "The follow-up is still queued and was not executed." };
+    }
+    if (after.status === "waiting_for_human") {
+      return { ok: true, message: "Outreach is blocked pending human review." };
     }
 
     const updated = await this.input.store.getRun(workflowRunId);
@@ -208,7 +156,10 @@ export class WorkflowEngine {
       : updated.status === "waiting_for_human"
         ? " Human review is now required before outreach can continue."
         : " No further follow-up is scheduled.";
-    return { ok: true, message: `Follow-up completed. ${updated.summary}${nextText}` };
+    return {
+      ok: true,
+      message: `Follow-up call placed to ${updated.title}. The conversation outcome will be recorded when the call completes.${nextText}`,
+    };
   }
 
   async applyAction(action: WorkflowAction): Promise<{ ok: boolean; message: string }> {
@@ -268,7 +219,7 @@ export class WorkflowEngine {
       stepType: action.stepType,
       label: template.label,
       dueAt: action.dueAt,
-      payload: { reason: action.reason },
+      payload: { reason: action.reason, requestedByUser: true },
     });
     let schedulerError: unknown;
     if (this.input.scheduler) {
@@ -674,33 +625,6 @@ export class WorkflowEngine {
       actorType: "worker",
       payload: { stepId: workflowStepId, error: message },
     });
-  }
-
-  private signalForStep(stepType: string, text: string, failedAttemptCount: number, payload: unknown): WorkflowSignal {
-    const actorRole = stepType === "client_check_in" ? "client" : "provider";
-    return {
-      text,
-      channel: "phone",
-      attemptCount: failedAttemptCount,
-      hasAuthorization: this.hasAuthorization(stepType, payload),
-      actorRole,
-    };
-  }
-
-  private outcomeForResponse(text: string) {
-    const normalized = text.toLowerCase();
-    if (normalized.includes("cannot")) return "refused";
-    if (normalized.includes("no response") || normalized.includes("unable to reach") || normalized.includes("unreachable")) return "failed";
-    return "reached";
-  }
-
-  private failedAttemptCount(payload: unknown, outcome: string) {
-    const priorCount = this.payloadNumber(payload, "failedAttemptCount");
-    return priorCount + (outcome === "failed" ? 1 : 0);
-  }
-
-  private hasAuthorization(stepType: string, payload: unknown) {
-    return stepType === "provider_follow_up" ? this.payloadBoolean(payload, "hasAuthorization", true) : true;
   }
 
   private payloadNumber(payload: unknown, key: string) {
