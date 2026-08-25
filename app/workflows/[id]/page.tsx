@@ -1,6 +1,15 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { ReactNode } from "react";
+import {
+  ArrowLeft,
+  CalendarClock,
+  CheckCircle2,
+  ClipboardCheck,
+  History,
+  ListChecks,
+  PhoneOutgoing,
+  Sparkles,
+} from "lucide-react";
 import { LiveKitVoiceLauncher } from "../../voice/livekit-room";
 import { OutboundCallPanel } from "./outbound-call-panel";
 import { getWorkflowDetail } from "@/modules/dashboard/queries";
@@ -8,6 +17,17 @@ import { loadOutboundCallContext, DrizzlePhoneCallStore } from "@/modules/phone/
 import { buildWorkflowBriefing } from "@/modules/workflows/briefing";
 import { getWorkflowDefinition } from "@/modules/workflows/definitions";
 import type { WorkflowDefinitionId } from "@/modules/workflows/types";
+import {
+  Callout,
+  Card,
+  CardHeader,
+  EmptyState,
+  PageHeader,
+  StatusBadge,
+  Timeline,
+  formatDateTime,
+  humanize,
+} from "../../components/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -33,59 +53,72 @@ export default async function WorkflowDetailPage({ params }: { params: Promise<{
 
   return (
     <div className="space-y-6">
-      <div>
-        <p className="text-sm text-muted">{definition.label}</p>
-        <h1 className="text-2xl font-semibold">{detail.context?.matterName ?? detail.run.title}</h1>
-        <p className="text-sm text-muted">
-          {detail.context
-            ? `Client: ${detail.context.clientName}${detail.context.providerName ? ` | Provider: ${detail.context.providerName}` : ""} | Owner: ${detail.context.assignedUserName}`
-            : detail.caseRecord?.matterName ?? "Unknown case"}
-        </p>
-        <p className="mt-1 text-sm text-muted">{detail.run.title} - {detail.run.status}</p>
-        {detail.caseRecord ? (
-          <p className="mt-2 text-sm">
-            <Link href={`/cases/${detail.caseRecord.id}`}>Open case file</Link>
-          </p>
-        ) : null}
-      </div>
+      <Link
+        className="inline-flex items-center gap-1 text-sm font-medium text-muted transition-colors hover:text-accent"
+        href={detail.caseRecord ? `/cases/${detail.caseRecord.id}` : "/cases"}
+      >
+        <ArrowLeft aria-hidden size={15} /> {detail.caseRecord ? "Back to case file" : "All cases"}
+      </Link>
 
-      <section className="rounded border border-line bg-white p-4">
-        <h2 className="mb-3 font-semibold">Current status</h2>
-        <p>{briefing.currentStatus}</p>
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <div>
-            <h3 className="text-sm font-medium">What has happened</h3>
-            {briefing.whatHappened.length === 0 ? (
-              <EmptyState>No history has been recorded yet.</EmptyState>
-            ) : (
-              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted">
-                {briefing.whatHappened.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-          <div>
-            <h3 className="text-sm font-medium">Next steps</h3>
-            {briefing.nextSteps.length === 0 ? (
-              <EmptyState>No next steps are planned.</EmptyState>
-            ) : (
-              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted">
-                {briefing.nextSteps.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            )}
-            {briefing.nextFollowUp ? (
-              <p className="mt-3 text-sm">
-                Next follow-up: {briefing.nextFollowUp.label} at {briefing.nextFollowUp.dueAt.toLocaleString()}
-              </p>
-            ) : (
-              <p className="mt-3 text-sm text-muted">No follow-up is currently scheduled.</p>
-            )}
+      <PageHeader
+        eyebrow={definition.label}
+        title={detail.context?.matterName ?? detail.run.title}
+        description={
+          detail.context
+            ? `Client: ${detail.context.clientName}${detail.context.providerName ? ` · Provider: ${detail.context.providerName}` : ""} · Owner: ${detail.context.assignedUserName}`
+            : detail.caseRecord?.matterName ?? undefined
+        }
+        actions={<StatusBadge status={detail.run.status} />}
+      />
+
+      <Card>
+        <CardHeader title="Current status" icon={<Sparkles size={15} />} />
+        <div className="px-5 py-4">
+          <p className="text-sm text-ink">{briefing.currentStatus}</p>
+          <div className="mt-4 grid gap-6 lg:grid-cols-2">
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">What has happened</h3>
+              {briefing.whatHappened.length === 0 ? (
+                <EmptyState>No history has been recorded yet.</EmptyState>
+              ) : (
+                <ul className="mt-2 space-y-1.5">
+                  {briefing.whatHappened.map((item) => (
+                    <li className="flex items-start gap-2 text-sm text-muted" key={item}>
+                      <CheckCircle2 aria-hidden className="mt-0.5 shrink-0 text-teal-600" size={14} />
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">Next steps</h3>
+              {briefing.nextSteps.length === 0 ? (
+                <EmptyState>No next steps are planned.</EmptyState>
+              ) : (
+                <ul className="mt-2 space-y-1.5">
+                  {briefing.nextSteps.map((item) => (
+                    <li className="flex items-start gap-2 text-sm text-muted" key={item}>
+                      <ListChecks aria-hidden className="mt-0.5 shrink-0 text-blue-600" size={14} />
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {briefing.nextFollowUp ? (
+                <div className="mt-3">
+                  <Callout tone="info" title="Next follow-up">
+                    {briefing.nextFollowUp.label} · {formatDateTime(briefing.nextFollowUp.dueAt)} (
+                    {relativeFromNow(briefing.nextFollowUp.dueAt)})
+                  </Callout>
+                </div>
+              ) : (
+                <p className="mt-3 text-sm text-muted">No follow-up is currently scheduled.</p>
+              )}
+            </div>
           </div>
         </div>
-      </section>
+      </Card>
 
       <OutboundCallPanel workflowRunId={detail.run.id} context={callContext} calls={phoneCalls} />
 
@@ -100,76 +133,123 @@ export default async function WorkflowDetailPage({ params }: { params: Promise<{
         buttonLabel={briefing.canRunFollowUpNow ? "Do follow-up now with LiveKit" : "Ask the voice agent"}
       />
 
-      <section className="grid gap-4 lg:grid-cols-2">
-        <Panel title="Steps">
-          {detail.steps.length === 0 ? (
-            <EmptyState>No workflow steps have been scheduled.</EmptyState>
-          ) : (
-            detail.steps.map((step) => (
-              <div key={step.id} className="border-b border-line py-3 last:border-b-0">
-                <p className="font-medium">{step.label}</p>
-                <p className="text-sm text-muted">
-                  {step.status} - due {step.dueAt.toLocaleString()}
-                </p>
-              </div>
-            ))
-          )}
-        </Panel>
-        <Panel title="Human review">
-          {detail.reviews.length === 0 ? (
-            <EmptyState>No human review has been requested.</EmptyState>
-          ) : (
-            detail.reviews.map((review) => (
-              <div key={review.id} className="border-b border-line py-3 last:border-b-0">
-                <p className="font-medium">{review.reason}</p>
-                <p className="text-sm text-muted">{review.summary}</p>
-              </div>
-            ))
-          )}
-        </Panel>
+      <section className="grid gap-4 xl:grid-cols-2">
+        <Card>
+          <CardHeader title="Steps" icon={<CalendarClock size={15} />} />
+          <div className="px-5 py-4">
+            {detail.steps.length === 0 ? (
+              <EmptyState icon={<CalendarClock size={28} />}>No workflow steps have been scheduled.</EmptyState>
+            ) : (
+              <Timeline
+                items={[...detail.steps].reverse().map((step) => ({
+                  id: step.id,
+                  title: step.label,
+                  badge: <StatusBadge status={step.status} />,
+                  meta: `Due ${formatDateTime(step.dueAt)} (${relativeFromNow(step.dueAt)})`,
+                  dotTone:
+                    step.status === "completed"
+                      ? "success"
+                      : step.status === "waiting_for_human"
+                        ? "warning"
+                        : step.status === "failed" || step.status === "skipped"
+                          ? "danger"
+                          : step.status === "running"
+                            ? "info"
+                            : "accent",
+                }))}
+              />
+            )}
+          </div>
+        </Card>
+
+        <Card>
+          <CardHeader title="Human review" icon={<ClipboardCheck size={15} />} />
+          <div className="px-5 py-4">
+            {detail.reviews.length === 0 ? (
+              <EmptyState icon={<ClipboardCheck size={28} />}>No human review has been requested.</EmptyState>
+            ) : (
+              <Timeline
+                items={[...detail.reviews].reverse().map((review) => ({
+                  id: review.id,
+                  title: humanize(review.reason),
+                  badge: (
+                    <>
+                      <StatusBadge status={review.severity} />
+                      <StatusBadge status={review.status} />
+                    </>
+                  ),
+                  body: review.summary,
+                  dotTone: review.severity === "high" ? "danger" : "warning",
+                }))}
+              />
+            )}
+          </div>
+        </Card>
       </section>
 
-      <Panel title="Contact attempts">
-        {detail.attempts.length === 0 ? (
-          <EmptyState>No contact attempts have been made.</EmptyState>
-        ) : (
-          detail.attempts.map((attempt) => (
-            <div key={attempt.id} className="border-b border-line py-3 last:border-b-0">
-              <p className="font-medium">
-                {attempt.channel} - {attempt.outcome}
-              </p>
-              <p className="text-sm text-muted">{attempt.summary}</p>
-            </div>
-          ))
-        )}
-      </Panel>
+      <section className="grid gap-4 xl:grid-cols-2">
+        <Card>
+          <CardHeader title="Contact attempts" icon={<PhoneOutgoing size={15} />} />
+          <div className="px-5 py-4">
+            {detail.attempts.length === 0 ? (
+              <EmptyState icon={<PhoneOutgoing size={28} />}>No contact attempts have been made.</EmptyState>
+            ) : (
+              <Timeline
+                items={[...detail.attempts].reverse().map((attempt) => ({
+                  id: attempt.id,
+                  title: `${humanize(attempt.channel)} · ${humanize(attempt.outcome)}`,
+                  badge: <StatusBadge status={attempt.outcome} />,
+                  body: attempt.summary,
+                  dotTone:
+                    attempt.outcome === "reached"
+                      ? "success"
+                      : attempt.outcome === "failed" || attempt.outcome === "refused"
+                        ? "danger"
+                        : "warning",
+                }))}
+              />
+            )}
+          </div>
+        </Card>
 
-      <Panel title="Audit timeline">
-        {detail.events.length === 0 ? (
-          <EmptyState>No audit events have been recorded.</EmptyState>
-        ) : (
-          detail.events.map((event) => (
-            <div key={event.id} className="border-b border-line py-3 last:border-b-0">
-              <p className="font-medium">{event.type}</p>
-              <p className="text-sm text-muted">{event.summary}</p>
-              <p className="text-xs text-muted">{event.occurredAt.toLocaleString()}</p>
-            </div>
-          ))
-        )}
-      </Panel>
+        <Card>
+          <CardHeader title="Audit timeline" icon={<History size={15} />} />
+          <div className="px-5 py-4">
+            {detail.events.length === 0 ? (
+              <EmptyState icon={<History size={28} />}>No audit events have been recorded.</EmptyState>
+            ) : (
+              <Timeline
+                items={[...detail.events].reverse().map((event) => ({
+                  id: event.id,
+                  title: event.type,
+                  body: event.summary,
+                  meta: formatDateTime(event.occurredAt),
+                  dotTone: event.type.includes("fail")
+                    ? "danger"
+                    : event.type.startsWith("review")
+                      ? "warning"
+                      : event.type.includes("completed")
+                        ? "success"
+                        : event.type === "scheduling.decision"
+                          ? "info"
+                          : "accent",
+                }))}
+              />
+            )}
+          </div>
+        </Card>
+      </section>
     </div>
   );
 }
 
-function Panel({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="rounded border border-line bg-white p-4">
-      <h2 className="mb-3 font-semibold">{title}</h2>
-      {children}
-    </section>
-  );
-}
-
-function EmptyState({ children }: { children: ReactNode }) {
-  return <p className="py-3 text-sm text-muted">{children}</p>;
+function relativeFromNow(date: Date) {
+  const diffMs = date.getTime() - Date.now();
+  const absMinutes = Math.round(Math.abs(diffMs) / 60_000);
+  if (absMinutes < 1) return "now";
+  if (absMinutes < 60) return diffMs > 0 ? `in ${absMinutes}m` : `${absMinutes}m ago`;
+  const hours = Math.round(absMinutes / 60);
+  if (hours < 24) return diffMs > 0 ? `in ${hours}h` : `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return diffMs > 0 ? `in ${days}d` : `${days}d ago`;
 }

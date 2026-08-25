@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { Search } from "lucide-react";
-import { StatusBadge } from "./ui";
+import { ChevronRight, Phone, Search, Users } from "lucide-react";
+import { Avatar, Card, EmptyState, StatusBadge, cx, humanize } from "../components/ui";
 
 export type CaseDirectoryItem = {
   id: string;
@@ -41,70 +41,91 @@ export function CaseDirectory({ cases }: { cases: CaseDirectoryItem[] }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <label className="relative block min-w-0 flex-1">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <label className="relative block w-full max-w-md">
           <span className="sr-only">Search cases</span>
-          <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" size={16} />
+          <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
           <input
-            className="w-full rounded border border-line bg-white py-2 pl-9 pr-3 text-sm"
+            className="w-full rounded-lg border border-line bg-white py-2 pl-9 pr-3 text-sm text-ink placeholder:text-slate-400 focus:border-accent focus:outline-none focus:ring-2 focus:ring-teal-600/15"
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search matter, client, provider, or phone"
             value={query}
           />
         </label>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {statuses.map((value) => (
             <button
-              className={`rounded border px-3 py-1.5 text-sm ${
-                status === value ? "border-accent bg-accent text-white" : "border-line bg-white text-muted"
-              }`}
+              className={cx(
+                "rounded-full px-3 py-1.5 text-xs font-medium ring-1 ring-inset transition-colors",
+                status === value
+                  ? "bg-accent text-white ring-teal-700"
+                  : "bg-white text-muted ring-line hover:bg-panel hover:text-ink",
+              )}
               key={value}
               onClick={() => setStatus(value)}
               type="button"
             >
-              {value === "all" ? "All" : value.replaceAll("_", " ")}
+              {value === "all" ? "All" : humanize(value)}
             </button>
           ))}
         </div>
       </div>
 
-      <p className="text-sm text-muted">
-        {filtered.length} of {cases.length} {cases.length === 1 ? "case" : "cases"}
-      </p>
-
       {filtered.length === 0 ? (
-        <p className="rounded border border-line bg-white p-6 text-sm text-muted">No cases match that search.</p>
+        <Card>
+          <EmptyState icon={<Users size={28} />}>
+            {cases.length === 0 ? "No cases yet. Create your first case above." : "No cases match that search."}
+          </EmptyState>
+        </Card>
       ) : (
-        <div className="overflow-hidden rounded border border-line bg-white">
-          <ul className="divide-y divide-line">
+        <>
+          <p className="text-xs text-muted">
+            Showing {filtered.length} of {cases.length} {cases.length === 1 ? "case" : "cases"}
+          </p>
+          <ul className="space-y-2.5">
             {filtered.map((item) => (
               <li key={item.id}>
-                <Link className="block p-4 transition-colors hover:bg-panel" href={`/cases/${item.id}`}>
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="font-medium">{item.matterName}</p>
-                      <p className="mt-1 text-sm text-muted">
-                        {[
-                          item.client ? `Client: ${item.client.name}` : "No client on file",
-                          item.client?.phone,
-                          item.provider ? `Provider: ${item.provider.name}` : null,
-                          `Owner: ${item.assignedUserName}`,
-                        ]
-                          .filter(Boolean)
-                          .join(" - ")}
-                      </p>
-                      <p className="mt-1 text-xs text-muted">
-                        {item.workflowCount} {item.workflowCount === 1 ? "workflow" : "workflows"}
-                        {item.client?.timeZone ? ` - Client timezone ${item.client.timeZone}` : ""}
-                      </p>
+                <Link
+                  className="group flex items-center gap-4 rounded-xl border border-line bg-white p-4 shadow-card transition-shadow hover:shadow-pop"
+                  href={`/cases/${item.id}`}
+                >
+                  <Avatar name={item.matterName} tone={item.status === "active" ? "accent" : "neutral"} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <p className="truncate text-sm font-semibold text-ink">{item.matterName}</p>
+                      <StatusBadge status={item.status} />
                     </div>
-                    <StatusBadge status={item.status} />
+                    <p className="mt-0.5 truncate text-sm text-muted">
+                      {[
+                        item.client ? item.client.name : "No client on file",
+                        item.provider ? `Provider: ${item.provider.name}` : null,
+                        `Owner: ${item.assignedUserName}`,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </p>
+                    <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted">
+                      <span>
+                        {item.workflowCount} {item.workflowCount === 1 ? "workflow" : "workflows"}
+                      </span>
+                      {item.client?.phone ? (
+                        <span className="inline-flex items-center gap-1">
+                          <Phone aria-hidden size={12} /> {item.client.phone}
+                        </span>
+                      ) : null}
+                      {item.client?.timeZone ? <span>{item.client.timeZone}</span> : null}
+                    </p>
                   </div>
+                  <ChevronRight
+                    aria-hidden
+                    size={18}
+                    className="shrink-0 text-slate-300 transition-colors group-hover:text-accent"
+                  />
                 </Link>
               </li>
             ))}
           </ul>
-        </div>
+        </>
       )}
     </div>
   );

@@ -1,6 +1,7 @@
 import { CaseDirectory } from "./case-directory";
 import { NewCaseForm } from "./new-case-form";
 import { listCaseDirectory, listFirmUsers } from "@/modules/cases/store";
+import { PageHeader } from "../components/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -9,12 +10,11 @@ export default async function CasesPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Cases</h1>
-        <p className="text-sm text-muted">
-          Legal context for every matter: clients, providers, owners, and the contact details outbound calling uses.
-        </p>
-      </div>
+      <PageHeader
+        eyebrow="Legal context"
+        title="Cases"
+        description="Every matter with the clients, providers, owners, and contact details outbound calling depends on."
+      />
       <NewCaseForm firmUsers={firmUsers} />
       <CaseDirectory cases={cases} />
     </div>

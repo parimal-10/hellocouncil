@@ -1,5 +1,7 @@
+import { Mic, Radio, Webhook } from "lucide-react";
 import { LiveKitVoiceLauncher } from "./livekit-room";
 import { getVoiceConsoleData, voiceSessionLabel } from "@/modules/dashboard/queries";
+import { Card, CardHeader, EmptyState, PageHeader, StatusBadge, Timeline, formatDateTime, humanize } from "../components/ui";
 
 export const dynamic = "force-dynamic";
 
@@ -8,47 +10,66 @@ export default async function VoicePage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Voice sessions</h1>
-        <p className="mt-1 text-sm text-muted">
-          Real LiveKit sessions require <code>npm run voice:agent</code> and LiveKit environment variables. Outbound phone follow-ups place real Twilio calls.
-        </p>
-      </div>
+      <PageHeader
+        eyebrow="Voice"
+        title="Voice sessions"
+        description="Browser sessions run over LiveKit; scheduled follow-ups place real Twilio calls."
+      />
 
       <LiveKitVoiceLauncher runs={runs.map((run) => ({ id: run.id, title: run.title, summary: run.summary }))} />
 
-      <section className="border-t border-line pt-5">
-        <h2 className="font-semibold">Recent sessions</h2>
-        {sessions.length === 0 ? (
-          <p className="py-3 text-sm text-muted">No voice sessions have been recorded.</p>
-        ) : (
-          <div className="mt-2 divide-y divide-line">
-            {sessions.map((session) => (
-              <div key={session.id} className="flex items-center justify-between gap-4 py-2 text-sm">
-                <span className="font-medium">{voiceSessionLabel(session)}</span>
-                <span className="text-muted">{session.startedAt.toLocaleString()}</span>
-              </div>
-            ))}
-          </div>
-        )}
+      <section className="grid gap-4 xl:grid-cols-2">
+        <Card>
+          <CardHeader title="Recent sessions" icon={<Radio size={15} />} />
+          {sessions.length === 0 ? (
+            <EmptyState icon={<Radio size={28} />}>No voice sessions have been recorded.</EmptyState>
+          ) : (
+            <ul className="divide-y divide-line">
+              {sessions.map((session) => (
+                <li className="flex items-center justify-between gap-3 px-5 py-3" key={session.id}>
+                  <span className="truncate font-mono text-xs text-ink">{voiceSessionLabel(session)}</span>
+                  <span className="flex shrink-0 items-center gap-2">
+                    <StatusBadge status={session.status} />
+                    <span className="text-xs text-muted">{formatDateTime(session.startedAt)}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+
+        <Card>
+          <CardHeader title="Recent session events" icon={<Webhook size={15} />} />
+          {events.length === 0 ? (
+            <EmptyState icon={<Webhook size={28} />}>No transcript or tool events have been recorded.</EmptyState>
+          ) : (
+            <div className="max-h-[32rem] overflow-y-auto px-5 py-4">
+              <Timeline
+                items={[...events].reverse().map(({ event, session }) => ({
+                  id: event.id,
+                  title: humanize(event.type),
+                  badge: event.toolCallId ? (
+                    <span className="font-mono text-[10px] text-muted">{event.toolCallId}</span>
+                  ) : undefined,
+                  body: voiceEventSummary(event),
+                  meta: `${voiceSessionLabel(session)} · ${formatDateTime(event.occurredAt)}`,
+                  dotTone:
+                    event.type === "tool_result"
+                      ? "info"
+                      : event.type.includes("fail") || event.type === "error"
+                        ? "danger"
+                        : "accent",
+                }))}
+              />
+            </div>
+          )}
+        </Card>
       </section>
 
-      <section className="border-t border-line pt-5">
-        <h2 className="font-semibold">Recent session events</h2>
-        {events.length === 0 ? (
-          <p className="py-3 text-sm text-muted">No transcript or tool events have been recorded.</p>
-        ) : (
-          <div className="mt-2 divide-y divide-line">
-            {events.map(({ event, session }) => (
-              <div key={event.id} className="grid gap-1 py-2 text-sm md:grid-cols-[12rem_10rem_1fr]">
-                <span className="font-medium">{event.type}</span>
-                <span className="text-muted">{voiceSessionLabel(session)}</span>
-                <span className="break-words text-muted">{voiceEventSummary(event)}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
+      <p className="flex items-start gap-1.5 text-xs text-muted">
+        <Mic aria-hidden className="mt-0.5 shrink-0" size={13} />
+        Real LiveKit sessions require <code>npm run voice:agent</code> and LiveKit environment variables.
+      </p>
     </div>
   );
 }
