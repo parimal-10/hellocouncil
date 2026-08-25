@@ -10,6 +10,7 @@ function context(overrides: Partial<OutboundCallContext> = {}): OutboundCallCont
   return {
     caseId: "case-1",
     workflowRunId: "run-1",
+    definitionId: "client-check-in",
     matterName: "Lee v. Metro Transit",
     clientName: "Jordan Lee",
     clientPhone: "+13125550101",
@@ -73,12 +74,36 @@ describe("placeOutboundCall", () => {
     expect(created[0]).toMatchObject({
       to: "+13125550101",
       from: "+15551234567",
-      machineDetection: "Enable",
     });
+    expect(created[0]).not.toHaveProperty("machineDetection");
+    expect(created[0]).not.toHaveProperty("statusCallbackEvent");
     expect(String(created[0]?.url)).toContain("/api/twilio/voice?callId=");
     expect(String(created[0]?.statusCallback)).toContain("/api/twilio/status?callId=");
     expect(store.scheduledFollowUps).toHaveLength(0);
     expect(result.compliance.blocked).toBe(false);
+  });
+
+  it("dials the provider number for a medical-records follow-up", async () => {
+    const store = new MemoryPhoneCallStore();
+    const created: Array<Record<string, unknown>> = [];
+    const result = await placeOutboundCall({
+      context: context({
+        definitionId: "medical-records-follow-up",
+        providerName: "Harbor Orthopedics",
+        providerPhone: "+12125550199",
+        runTitle: "Harbor Orthopedics records follow-up",
+      }),
+      now: chicagoMondayAfternoon,
+      store,
+      twilio: twilioStub(created),
+      config: { fromNumber: "+15551234567", publicBaseUrl: "https://example.test" },
+      stepType: "provider_follow_up",
+    });
+
+    expect(result.call.toNumber).toBe("+12125550199");
+    expect(created[0]).toMatchObject({ to: "+12125550199" });
+    expect(result.call.briefing).toMatch(/Harbor Orthopedics/);
+    expect(result.call.briefing).toMatch(/records desk/);
   });
 
   it("refuses to dial when the case has no phone number", async () => {
@@ -111,6 +136,7 @@ describe("call voice and turns", () => {
       store,
       llm,
       now: chicagoMondayAfternoon,
+      publicBaseUrl: "https://example.test",
     });
 
     expect(twiml).toMatch(/<Say\b/);
@@ -119,24 +145,31 @@ describe("call voice and turns", () => {
     expect(store.calls[0]?.transcript).toHaveLength(1);
   });
 
-  it("greets a live answer using loaded case history in the client's local time", async () => {
+  it("greets a live answer immediately without waiting on the LLM", async () => {
     const store = new MemoryPhoneCallStore();
     const call = await seedCall(store);
     const twiml = await handleCallVoice({
       callId: call.id,
       answeredBy: "human",
       store,
-      llm: scriptedLlm([
-        "Hi Jordan, this is HelloCounsel following up on Lee v. Metro Transit. Northside still has your records in queue from last Thursday.",
-      ]),
+      llm: {
+        async complete() {
+          throw new Error("LLM should not be called for the opening TwiML");
+        },
+      },
       now: chicagoMondayAfternoon,
+      publicBaseUrl: "https://example.test",
     });
 
     expect(store.calls[0]?.connectionStatus).toBe("answered");
-    expect(store.calls[0]?.transcript[0]).toMatchObject({ speaker: "agent" });
+    expect(store.calls[0]?.transcript[0]).toMatchObject({
+      speaker: "agent",
+      text: "Hello, this is HelloCounsel calling about your case. How are you today?",
+    });
     expect(twiml).toContain("<Gather");
     expect(twiml).toContain("input=\"speech\"");
-    expect(twiml).toContain("Hi Jordan");
+    expect(twiml).toContain("HelloCounsel");
+    expect(twiml).toContain(`https://example.test/api/twilio/voice?callId=${call.id}`);
   });
 
   it("lets the model follow the client instead of a fixed script, then hangs up on END_CALL", async () => {
@@ -148,6 +181,7 @@ describe("call voice and turns", () => {
       store,
       llm: scriptedLlm(["Thanks Jordan, I will note that the records arrived. [[END_CALL]]"]),
       now: chicagoMondayAfternoon,
+      publicBaseUrl: "https://example.test",
     });
 
     const saved = store.calls[0];

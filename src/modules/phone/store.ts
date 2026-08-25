@@ -10,6 +10,7 @@ import {
   phoneCalls,
   workflowEvents,
   workflowRuns,
+  workflowSteps,
 } from "@/db/schema";
 import { assembleOutboundCallContext } from "./context";
 import type { OutboundCallContext, PhoneCallRecord, PhoneCallStore, PhoneTranscriptTurn, StructuredCallOutcome } from "./types";
@@ -123,6 +124,7 @@ export async function loadOutboundCallContext(
       personTimeZone: people.timeZone,
       personTimeZoneSource: people.timeZoneSource,
       organizationName: organizations.name,
+      organizationPhone: organizations.phone,
     })
     .from(caseParticipants)
     .leftJoin(people, eq(caseParticipants.personId, people.id))
@@ -160,7 +162,14 @@ export async function loadOutboundCallContext(
   ]);
 
   return assembleOutboundCallContext({
-    run,
+    run: {
+      id: run.id,
+      caseId: run.caseId,
+      definitionId: run.definitionId,
+      title: run.title,
+      status: run.status,
+      summary: run.summary,
+    },
     caseRecord,
     client: {
       name: clientParticipant.personName,
@@ -170,11 +179,21 @@ export async function loadOutboundCallContext(
     },
     assignedUserName: owner?.name ?? "Unassigned",
     providerName: provider?.organizationName ?? provider?.personName ?? undefined,
+    providerPhone: provider?.organizationPhone ?? provider?.personPhone ?? undefined,
     events,
     attempts,
     reviews,
     priorCalls: priorCalls.map(deserializeCall),
   });
+}
+
+export async function loadWorkflowStepType(stepId: string, client: DbClient = db): Promise<string | null> {
+  const [step] = await client
+    .select({ stepType: workflowSteps.stepType })
+    .from(workflowSteps)
+    .where(eq(workflowSteps.id, stepId))
+    .limit(1);
+  return step?.stepType ?? null;
 }
 
 function serializeCall(input: Omit<PhoneCallRecord, "id" | "createdAt" | "updatedAt">) {

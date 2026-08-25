@@ -28,7 +28,7 @@ export async function applyOutboundCallFollowUp(input: {
       channel: "phone",
       attemptCount: 0,
       hasAuthorization: true,
-      actorRole: "client",
+      actorRole: step?.stepType === "provider_follow_up" ? "provider" : "client",
     });
     if (hitl.kind === "block") {
       const decision: FollowUpDecision = {

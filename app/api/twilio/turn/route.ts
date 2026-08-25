@@ -1,15 +1,24 @@
 import { handleCallTurn } from "@/modules/phone/service";
 import { DrizzlePhoneCallStore } from "@/modules/phone/store";
-import { createCallLlmClient, loadPhoneRuntimeConfig, readTwilioForm, twilioWebhookUrl, validateTwilioSignature } from "@/modules/phone/config";
+import {
+  authorizeTwilioWebhook,
+  createCallLlmClient,
+  loadPhoneRuntimeConfig,
+  readTwilioForm,
+  twilioWebhookUrlCandidates,
+} from "@/modules/phone/config";
 
 export async function POST(request: Request) {
   const config = loadPhoneRuntimeConfig();
   const params = await readTwilioForm(request);
-  const url = twilioWebhookUrl(request, config.publicBaseUrl);
-  if (!validateTwilioSignature({
+  const urls = twilioWebhookUrlCandidates(request, config.publicBaseUrl);
+  if (!authorizeTwilioWebhook({
     authToken: config.authToken,
+    apiSecret: config.apiSecret,
+    accountSid: config.accountSid,
     signature: request.headers.get("x-twilio-signature"),
-    url,
+    userAgent: request.headers.get("user-agent"),
+    urls,
     params,
   })) {
     return new Response("Forbidden", { status: 403 });
@@ -24,6 +33,7 @@ export async function POST(request: Request) {
     store: new DrizzlePhoneCallStore(),
     llm: createCallLlmClient(config.llm),
     now: new Date(),
+    publicBaseUrl: config.publicBaseUrl,
   });
   return new Response(twiml, { headers: { "Content-Type": "text/xml" } });
 }

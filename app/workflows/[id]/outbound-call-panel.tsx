@@ -1,4 +1,6 @@
 import { placeOutboundCallAction } from "../../actions/phone";
+import { resolveOutboundCallee } from "@/modules/phone/callee";
+import { toE164 } from "@/modules/phone/phone-number";
 import { formatInTimeZone } from "@/modules/time/timezone";
 import type { OutboundCallContext, PhoneCallRecord } from "@/modules/phone/types";
 
@@ -11,33 +13,43 @@ export function OutboundCallPanel(props: {
     return (
       <section className="rounded border border-line bg-white p-4">
         <h2 className="mb-3 font-semibold">Outbound call</h2>
-        <p className="text-sm text-muted">This case has no client to call.</p>
+        <p className="text-sm text-muted">This workflow has no client on the case, so it cannot place a call.</p>
       </section>
     );
   }
+
+  const callee = resolveOutboundCallee(props.context);
+  const dialable = Boolean(toE164(callee.phone));
 
   return (
     <section className="rounded border border-line bg-white p-4">
       <h2 className="mb-3 font-semibold">Outbound call</h2>
       <p className="text-sm">
-        Client: {props.context.clientName} at {props.context.clientPhone || "no phone on file"}
+        {callee.role === "provider" ? "Provider" : "Client"}: {callee.name} at {callee.phone || "no phone on file"}
       </p>
       <p className="text-sm text-muted">
         Timezone: {props.context.timeZone} ({props.context.timeZoneSource})
       </p>
       <p className="mt-2 text-sm text-muted">
-        Manual test only. This does not wait for a scheduled follow-up. Compliance flags are recorded, not enforced.
+        Places a live Twilio call. The worker also auto-dials due follow-ups when AUTO_OUTBOUND_CALLS is enabled.
+        Twilio webhooks require a public PUBLIC_BASE_URL. Demo 555 numbers are not reachable.
       </p>
       <form action={placeOutboundCallAction} className="mt-4">
         <input type="hidden" name="workflowRunId" value={props.workflowRunId} />
         <button
           type="submit"
           className="rounded bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
-          disabled={!props.context.clientPhone}
+          disabled={!dialable}
         >
-          Call {props.context.clientName}
+          Call {callee.name}
         </button>
       </form>
+      {!dialable ? (
+        <p className="mt-2 text-sm text-muted">
+          Put a real E.164 number on the {callee.role === "provider" ? "provider organization" : "client"} in the case
+          file, then try again.
+        </p>
+      ) : null}
       <div className="mt-4 space-y-3">
         {props.calls.length === 0 ? (
           <p className="text-sm text-muted">No outbound calls have been placed yet.</p>

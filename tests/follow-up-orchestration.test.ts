@@ -111,7 +111,7 @@ describe("worker auto-dial", () => {
     expect([...store.steps.values()].filter((step) => step.status === "due")).toHaveLength(0);
   });
 
-  it("does not auto-dial provider follow-ups", async () => {
+  it("places an outbound call for a due provider follow-up and leaves the step running", async () => {
     const store = storeWithClientCheckIn();
     store.runs.set("run-1", { ...store.runs.get("run-1")!, definitionId: "medical-records-follow-up" });
     store.steps.set("step-1", { ...store.steps.get("step-1")!, stepType: "provider_follow_up", label: "Follow up with provider" });
@@ -121,14 +121,17 @@ describe("worker auto-dial", () => {
       definitions,
       outboundCaller: dialer,
       scheduler: { scheduleDueStep: async () => "job-1" },
-      syntheticResponses: { provider_follow_up: "Records are still in process." },
     });
 
     await engine.advanceDueStep("step-1", chicagoNoon);
 
-    expect(dialer.placed).toEqual([]);
-    expect(store.steps.get("step-1")?.status).toBe("completed");
-    expect(store.contactAttempts[0]).toMatchObject({ outcome: "reached" });
+    expect(dialer.placed).toEqual(["step-1"]);
+    expect(store.steps.get("step-1")?.status).toBe("running");
+    expect(store.steps.get("step-1")?.payload).toMatchObject({
+      outboundCallId: "call-for-step-1",
+      awaitingCallCompletion: true,
+    });
+    expect(store.contactAttempts).toHaveLength(0);
   });
 });
 

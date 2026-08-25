@@ -1,15 +1,24 @@
-import { handleCallVoice } from "@/modules/phone/service";
+import { handleCallTurn, handleCallVoice } from "@/modules/phone/service";
 import { DrizzlePhoneCallStore } from "@/modules/phone/store";
-import { createCallLlmClient, loadPhoneRuntimeConfig, readTwilioForm, twilioWebhookUrl, validateTwilioSignature } from "@/modules/phone/config";
+import {
+  authorizeTwilioWebhook,
+  createCallLlmClient,
+  loadPhoneRuntimeConfig,
+  readTwilioForm,
+  twilioWebhookUrlCandidates,
+} from "@/modules/phone/config";
 
 export async function POST(request: Request) {
   const config = loadPhoneRuntimeConfig();
   const params = await readTwilioForm(request);
-  const url = twilioWebhookUrl(request, config.publicBaseUrl);
-  if (!validateTwilioSignature({
+  const urls = twilioWebhookUrlCandidates(request, config.publicBaseUrl);
+  if (!authorizeTwilioWebhook({
     authToken: config.authToken,
+    apiSecret: config.apiSecret,
+    accountSid: config.accountSid,
     signature: request.headers.get("x-twilio-signature"),
-    url,
+    userAgent: request.headers.get("user-agent"),
+    urls,
     params,
   })) {
     return new Response("Forbidden", { status: 403 });
@@ -18,12 +27,25 @@ export async function POST(request: Request) {
   const callId = new URL(request.url).searchParams.get("callId");
   if (!callId) return new Response("Missing callId", { status: 400 });
 
-  const twiml = await handleCallVoice({
-    callId,
-    answeredBy: params.AnsweredBy,
-    store: new DrizzlePhoneCallStore(),
-    llm: createCallLlmClient(config.llm),
-    now: new Date(),
-  });
+  const store = new DrizzlePhoneCallStore();
+  const existing = await store.getCall(callId);
+  const followUp = Boolean(params.SpeechResult) || (existing?.transcript.length ?? 0) > 0;
+  const twiml = followUp
+    ? await handleCallTurn({
+        callId,
+        speech: params.SpeechResult,
+        store,
+        llm: createCallLlmClient(config.llm),
+        now: new Date(),
+        publicBaseUrl: config.publicBaseUrl,
+      })
+    : await handleCallVoice({
+        callId,
+        answeredBy: params.AnsweredBy,
+        store,
+        llm: createCallLlmClient(config.llm),
+        now: new Date(),
+        publicBaseUrl: config.publicBaseUrl,
+      });
   return new Response(twiml, { headers: { "Content-Type": "text/xml" } });
 }

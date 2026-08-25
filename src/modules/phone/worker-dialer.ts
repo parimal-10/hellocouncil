@@ -1,7 +1,7 @@
 import { createTwilioVoiceClient, loadPhoneRuntimeConfig } from "./config";
 import type { OutboundFollowUpPort } from "./orchestration";
 import { placeOutboundCall } from "./service";
-import { DrizzlePhoneCallStore, loadOutboundCallContext } from "./store";
+import { DrizzlePhoneCallStore, loadOutboundCallContext, loadWorkflowStepType } from "./store";
 
 export function createWorkerOutboundDialer(): OutboundFollowUpPort {
   loadPhoneRuntimeConfig();
@@ -20,6 +20,7 @@ export function createWorkerOutboundDialer(): OutboundFollowUpPort {
         twilio: createTwilioVoiceClient(config),
         config,
         workflowStepId: stepId,
+        stepType: await loadWorkflowStepType(stepId),
       });
       return { callId: result.call.id };
     },

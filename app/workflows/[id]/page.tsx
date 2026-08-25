@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 import { LiveKitVoiceLauncher } from "../../voice/livekit-room";
@@ -41,6 +42,11 @@ export default async function WorkflowDetailPage({ params }: { params: Promise<{
             : detail.caseRecord?.matterName ?? "Unknown case"}
         </p>
         <p className="mt-1 text-sm text-muted">{detail.run.title} - {detail.run.status}</p>
+        {detail.caseRecord ? (
+          <p className="mt-2 text-sm">
+            <Link href={`/cases/${detail.caseRecord.id}`}>Open case file</Link>
+          </p>
+        ) : null}
       </div>
 
       <section className="rounded border border-line bg-white p-4">

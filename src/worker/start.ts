@@ -13,7 +13,7 @@ function loadOutboundCaller(): OutboundFollowUpPort | undefined {
   }
   try {
     const caller = createWorkerOutboundDialer();
-    console.log("Automatic outbound calling is enabled for local/test only.");
+    console.log("Automatic outbound calling is enabled. Due phone follow-ups place Twilio calls.");
     return caller;
   } catch (error) {
     console.warn("AUTO_OUTBOUND_CALLS is set but phone runtime is not configured; using synthetic follow-ups.", error);

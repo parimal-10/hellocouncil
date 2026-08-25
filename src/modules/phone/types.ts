@@ -69,6 +69,7 @@ export type CallHistoryItem = {
 export type OutboundCallContext = {
   caseId: string;
   workflowRunId: string;
+  definitionId: string;
   matterName: string;
   clientName: string;
   clientPhone: string;
@@ -76,6 +77,7 @@ export type OutboundCallContext = {
   timeZoneSource: TimeZoneSource;
   assignedUserName: string;
   providerName?: string;
+  providerPhone?: string;
   runTitle: string;
   runStatus: string;
   runSummary: string;
@@ -118,8 +120,6 @@ export type TwilioVoiceClient = {
     from: string;
     url: string;
     statusCallback: string;
-    statusCallbackEvent: string[];
-    machineDetection: "Enable";
   }): Promise<{ sid: string; status: string }>;
 };
 

@@ -39,7 +39,11 @@ export function isWithinLocalBusinessHours(now: Date, timeZone: string): boolean
   return isWeekday(local) && local.hour >= FOLLOW_UP_POLICY.businessHours.startHour && local.hour < FOLLOW_UP_POLICY.businessHours.endHour;
 }
 
-export function nextLocalBusinessWindow(now: Date, timeZone: string, hour = FOLLOW_UP_POLICY.businessHours.startHour): Date {
+export function nextLocalBusinessWindow(
+  now: Date,
+  timeZone: string,
+  hour: number = FOLLOW_UP_POLICY.businessHours.startHour,
+): Date {
   const local = requireLocal(now, timeZone);
   const todayAtHour = local.set({ hour, minute: 0, second: 0, millisecond: 0 });
   if (isWeekday(local) && todayAtHour > local) {

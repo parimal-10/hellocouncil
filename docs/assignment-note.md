@@ -35,7 +35,7 @@ The reusable platform/framework approach was chosen because the durable workflow
 - Persisted simulated voice lifecycle, transcripts, tool calls, and tool results
 - Persisted LiveKit room, participant, and dispatch metadata
 - Seeded demo data
-- Follow-up orchestration: due client check-ins can auto-dial locally, and every scheduling decision is audited
+- Follow-up orchestration: due client check-ins and provider follow-ups can auto-dial via Twilio, and every scheduling decision is audited
 
 The worker uses app-DB scheduling claims as the scheduling and state authority, with a pg-boss producer used to enqueue claimed work. pg-boss is therefore a queueing mechanism in the current architecture, not the authority for workflow scheduling or state.
 
@@ -54,7 +54,7 @@ Every decision is written as a `scheduling.decision` workflow event with action,
 ## Stubbed
 
 - Automatic outbound calling outside local/test (`NODE_ENV=production` cannot enable it)
-- Provider follow-ups still use the synthetic worker path (Twilio auto-dial is client check-in only)
+- Provider follow-ups place Twilio calls when automatic outbound calling is enabled; synthetic responses remain the fallback when it is off
 - SMS, email, and provider portal integrations
 - Authentication and firm tenancy
 - Production observability
@@ -76,6 +76,6 @@ For example, a lien verification workflow could define a lienholder follow-up st
 ## What to Build Next
 
 1. Add authentication, firm tenancy, and role-based review permissions.
-2. Turn on automatic outbound calling outside local/test once the follow-up policy is reviewed, and add a provider Twilio path.
+2. Turn on automatic outbound calling outside local/test once the follow-up policy is reviewed.
 3. Add worker observability and stuck-step alerts.
 4. Move to Temporal if workflow branching and duration outgrow the DB-backed runner.

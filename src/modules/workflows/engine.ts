@@ -470,7 +470,7 @@ export class WorkflowEngine {
   }
 
   private shouldAutoDial(step: WorkflowStepRecord): boolean {
-    return Boolean(this.input.outboundCaller) && step.stepType === "client_check_in";
+    return Boolean(this.input.outboundCaller) && (step.stepType === "client_check_in" || step.stepType === "provider_follow_up");
   }
 
   private async placeAutoDial(step: WorkflowStepRecord, now: Date): Promise<void> {

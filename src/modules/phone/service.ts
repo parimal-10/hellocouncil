@@ -1,6 +1,7 @@
 import { buildCallBriefing, conversationMessages, hasEndCallMarker, stripEndCallMarker } from "./conversation";
 import { evaluateOutboundCallCompliance } from "./compliance";
-import type { LlmClient } from "./llm";
+import { resolveOutboundCallee } from "./callee";
+import type { ChatMessage, LlmClient } from "./llm";
 import { extractCallOutcome } from "./outcomes";
 import { toE164 } from "./phone-number";
 import { contactOutcomeFor, connectionStatusFromTwilio, isMachine, isTerminalConnectionStatus } from "./status";
@@ -16,6 +17,7 @@ import type {
 
 const VOICEMAIL_MESSAGE =
   "Hello, this is HelloCounsel calling about your case. We will try you again later. Goodbye.";
+const OPENING_MESSAGE = "Hello, this is HelloCounsel calling about your case. How are you today?";
 
 export async function placeOutboundCall(input: {
   context: OutboundCallContext;
@@ -26,10 +28,12 @@ export async function placeOutboundCall(input: {
   consentRecorded?: boolean;
   onDoNotCallList?: boolean;
   workflowStepId?: string | null;
+  stepType?: string | null;
 }): Promise<{ call: PhoneCallRecord; compliance: ReturnType<typeof evaluateOutboundCallCompliance> }> {
-  const toNumber = toE164(input.context.clientPhone);
+  const callee = resolveOutboundCallee(input.context, input.stepType);
+  const toNumber = toE164(callee.phone);
   if (!toNumber) {
-    throw new Error("This case has no dialable phone number.");
+    throw new Error(`No dialable phone number for ${callee.name}.`);
   }
 
   const compliance = evaluateOutboundCallCompliance({
@@ -49,7 +53,7 @@ export async function placeOutboundCall(input: {
     toNumber,
     fromNumber: input.config.fromNumber,
     timeZone: input.context.timeZone,
-    briefing: buildCallBriefing(input.context, input.now),
+    briefing: buildCallBriefing(input.context, input.now, input.stepType),
     connectionStatus: "initiated",
     twilioCallStatus: "queued",
     answeredBy: null,
@@ -65,8 +69,6 @@ export async function placeOutboundCall(input: {
     from: input.config.fromNumber,
     url: `${input.config.publicBaseUrl}/api/twilio/voice?callId=${call.id}`,
     statusCallback: `${input.config.publicBaseUrl}/api/twilio/status?callId=${call.id}`,
-    statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
-    machineDetection: "Enable",
   });
 
   const updated = await input.store.updateCall(call.id, {
@@ -77,7 +79,7 @@ export async function placeOutboundCall(input: {
   await input.store.appendWorkflowEvent({
     workflowRunId: input.context.workflowRunId,
     type: "phone_call.initiated",
-    summary: `Outbound call placed to ${input.context.clientName}.`,
+    summary: `Outbound call placed to ${callee.name}.`,
     payload: { callId: call.id, twilioCallSid: placed.sid, complianceFlags: compliance.flags },
   });
 
@@ -90,6 +92,7 @@ export async function handleCallVoice(input: {
   store: PhoneCallStore;
   llm: LlmClient;
   now: Date;
+  publicBaseUrl: string;
 }): Promise<string> {
   const call = await requireCall(input.store, input.callId);
   const connectionStatus = connectionStatusFromTwilio({
@@ -113,13 +116,11 @@ export async function handleCallVoice(input: {
     return sayAndHangup(VOICEMAIL_MESSAGE);
   }
 
-  const reply = await input.llm.complete(conversationMessages(call));
-  const spoken = stripEndCallMarker(reply);
+  const spoken = OPENING_MESSAGE;
   await input.store.appendTranscript(call.id, { speaker: "agent", text: spoken, occurredAt: input.now });
-  if (hasEndCallMarker(reply)) return sayAndHangup(spoken);
   return sayAndGather({
     text: spoken,
-    action: `/api/twilio/turn?callId=${call.id}`,
+    action: followUpAction(input.publicBaseUrl, call.id),
   });
 }
 
@@ -129,6 +130,7 @@ export async function handleCallTurn(input: {
   store: PhoneCallStore;
   llm: LlmClient;
   now: Date;
+  publicBaseUrl: string;
 }): Promise<string> {
   const call = await requireCall(input.store, input.callId);
   const speech = input.speech?.trim();
@@ -141,13 +143,16 @@ export async function handleCallTurn(input: {
     });
   }
 
-  const reply = await input.llm.complete(conversationMessages(current, speech ? undefined : "The client was silent. Prompt briefly or end the call."));
+  const reply = await completeSpokenReply(
+    input.llm,
+    conversationMessages(current, speech ? undefined : "The client was silent. Prompt briefly or end the call."),
+  );
   const spoken = stripEndCallMarker(reply) || "Thank you. Goodbye.";
   await input.store.appendTranscript(call.id, { speaker: "agent", text: spoken, occurredAt: input.now });
   if (hasEndCallMarker(reply) || !speech) return sayAndHangup(spoken);
   return sayAndGather({
     text: spoken,
-    action: `/api/twilio/turn?callId=${call.id}`,
+    action: followUpAction(input.publicBaseUrl, call.id),
   });
 }
 
@@ -218,6 +223,25 @@ async function requireCall(store: PhoneCallStore, callId: string): Promise<Phone
   const call = await store.getCall(callId);
   if (!call) throw new Error(`Phone call not found: ${callId}`);
   return call;
+}
+
+function followUpAction(publicBaseUrl: string, callId: string): string {
+  return `${publicBaseUrl.replace(/\/$/, "")}/api/twilio/voice?callId=${callId}`;
+}
+
+async function completeSpokenReply(llm: LlmClient, messages: ChatMessage[]): Promise<string> {
+  const fallback = "Sorry, I did not catch that. Could you say that again?";
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      llm.complete(messages),
+      new Promise<string>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), 3500);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function outcomeSummary(
