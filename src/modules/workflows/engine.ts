@@ -1,5 +1,6 @@
 import type { FollowUpDecision } from "@/modules/phone/follow-up-policy";
-import { decideAttemptWindow } from "@/modules/phone/follow-up-policy";
+import { advanceDueStep as advanceDueStepExternal, type ExecuteStepOutcome } from "./execution";
+import { blockStep, errorMessage, isPayload, serializeDecision } from "./transitions";
 import type { WorkflowRunRecord, WorkflowStepRecord, WorkflowStore } from "./store";
 import type { ReviewDecision, WorkflowAction, WorkflowDefinition } from "./types";
 
@@ -34,63 +35,8 @@ export class WorkflowEngine {
     return this.input.store.getStep(id);
   }
 
-  async advanceDueStep(stepId: string, now: Date): Promise<void> {
-    const existing = await this.input.store.getStep(stepId);
-    if (existing.status !== "due" || existing.dueAt > now) return;
-
-    // Explicitly requested follow-ups (voice agent, reviewer, case creation) honor the
-    // requested instant and are never deferred to the business-hours window.
-    const explicitlyRequested = this.payloadBoolean(existing.payload, "requestedByUser", false);
-    if (!explicitlyRequested && this.input.outboundCaller && this.shouldAutoDial(existing)) {
-      const { timeZone } = await this.input.outboundCaller.evaluateWindow({
-        workflowRunId: existing.workflowRunId,
-        now,
-      });
-      const window = decideAttemptWindow({ now, timeZone });
-      if (window.action === "defer_to_window") {
-        await this.applyFollowUpDecision({
-          workflowRunId: existing.workflowRunId,
-          stepId: existing.id,
-          decision: window,
-          now,
-        });
-        return;
-      }
-    }
-
-    const step = await this.input.store.claimDueStep(stepId, now);
-    if (!step) return;
-
-    try {
-      const run = await this.input.store.getRun(step.workflowRunId);
-      if (
-        step.stepType === "provider_follow_up"
-        && !this.payloadBoolean(step.payload, "hasAuthorization", true)
-      ) {
-        await this.blockStep(run.id, step.id, step.attemptCount, {
-          kind: "block",
-          reason: "missing_authorization",
-          severity: "high",
-          recommendedAction: "Verify authorization before contacting the provider again.",
-          summary: "Provider outreach is blocked until authorization is verified.",
-        });
-        return;
-      }
-
-      if (!this.input.outboundCaller) {
-        throw new Error(
-          "Automatic outbound calling is not configured. Due follow-ups place real Twilio calls; set AUTO_OUTBOUND_CALLS=true with a phone runtime.",
-        );
-      }
-      if (!this.shouldAutoDial(step)) {
-        throw new Error(`Step type ${step.stepType} has no outbound calling path.`);
-      }
-
-      await this.placeAutoDial(step, now);
-    } catch (error) {
-      await this.recoverClaimedStep(step, error);
-      throw error;
-    }
+  async advanceDueStep(stepId: string, now: Date): Promise<ExecuteStepOutcome> {
+    return advanceDueStepExternal({ store: this.input.store, outboundCaller: this.input.outboundCaller }, stepId, now);
   }
 
   async runFollowUpNow(workflowRunId: string, now: Date): Promise<{ ok: boolean; message: string }> {
@@ -358,7 +304,7 @@ export class WorkflowEngine {
         } satisfies Extract<ReviewDecision, { kind: "block" }>);
       if (step) {
         await this.input.store.updateStepPayload(step.id, this.decisionPayload(input));
-        await this.blockStep(run.id, step.id, step.attemptCount, review);
+        await blockStep(this.input.store, run.id, step.id, step.attemptCount, review);
       } else {
         await this.input.store.updateRunStatus(run.id, "waiting_for_human", review.summary);
         await this.input.store.createReview({ workflowRunId: run.id, decision: review });
@@ -415,32 +361,9 @@ export class WorkflowEngine {
         completedStepType: step?.stepType ?? definition.stepTemplates[0]?.type ?? "client_check_in",
         dueAt: input.decision.dueAt,
         now: input.now,
-        payload: { failedConnectCount: 0, schedulingDecision: this.serializeDecision(input.decision) },
+        payload: { failedConnectCount: 0, schedulingDecision: serializeDecision(input.decision) },
       });
     }
-  }
-
-  private shouldAutoDial(step: WorkflowStepRecord): boolean {
-    return Boolean(this.input.outboundCaller) && (step.stepType === "client_check_in" || step.stepType === "provider_follow_up");
-  }
-
-  private async placeAutoDial(step: WorkflowStepRecord, now: Date): Promise<void> {
-    await this.input.store.appendEvent({
-      workflowRunId: step.workflowRunId,
-      type: "step.running",
-      summary: `${step.label} started with an automatic outbound call.`,
-      actorType: "worker",
-      payload: { stepId: step.id, stepType: step.stepType, autoDial: true },
-    });
-    const placed = await this.input.outboundCaller!.placeCall({
-      workflowRunId: step.workflowRunId,
-      stepId: step.id,
-      now,
-    });
-    await this.input.store.updateStepPayload(step.id, {
-      outboundCallId: placed.callId,
-      awaitingCallCompletion: true,
-    });
   }
 
   private async createFollowUpStep(input: {
@@ -520,60 +443,11 @@ export class WorkflowEngine {
   private decisionPayload(input: { decision: FollowUpDecision; failedConnectCount?: number; callId?: string | null }) {
     const payload: Record<string, unknown> = {
       awaitingCallCompletion: false,
-      schedulingDecision: this.serializeDecision(input.decision),
+      schedulingDecision: serializeDecision(input.decision),
     };
     if (typeof input.failedConnectCount === "number") payload.failedConnectCount = input.failedConnectCount;
     if (input.callId) payload.outboundCallId = input.callId;
     return payload;
-  }
-
-  private serializeDecision(decision: FollowUpDecision) {
-    return {
-      action: decision.action,
-      reason: decision.reason,
-      policyId: decision.policyId,
-      dueAt: decision.dueAt?.toISOString() ?? null,
-      metadata: decision.metadata,
-    };
-  }
-
-  private async recoverClaimedStep(step: WorkflowStepRecord, error: unknown) {
-    if (this.hasLiveOutboundCall(step.payload)) return;
-
-    const retryLimit = this.retryLimitFor(step.stepType);
-    const retryable = step.attemptCount <= retryLimit;
-    const transitioned = await this.input.store.transitionClaimedStepAfterFailure(
-      step.id,
-      step.attemptCount,
-      retryable ? "due" : "failed",
-    );
-    if (!transitioned) return;
-
-    const message = this.errorMessage(error);
-    if (!retryable) {
-      await this.input.store.updateRunStatus(step.workflowRunId, "failed", message);
-    }
-    await this.input.store.appendEvent({
-      workflowRunId: step.workflowRunId,
-      type: "step.processing_failed",
-      summary: retryable ? `${step.label} failed and will be retried.` : `${step.label} exhausted its retry limit.`,
-      actorType: "worker",
-      payload: {
-        stepId: step.id,
-        attemptCount: step.attemptCount,
-        retryLimit,
-        retryable,
-        error: message,
-      },
-    });
-  }
-
-  private retryLimitFor(stepType: string) {
-    for (const definition of this.input.definitions) {
-      const template = definition.stepTemplates.find((item) => item.type === stepType);
-      if (template) return template.retryLimit;
-    }
-    return 0;
   }
 
   private reviewDecisionForAction(reason: Extract<WorkflowAction, { type: "request_review" }>["reason"], summary: string) {
@@ -593,30 +467,8 @@ export class WorkflowEngine {
     return "voice_agent" as const;
   }
 
-  private errorMessage(error: unknown) {
-    return error instanceof Error ? error.message : "Unknown workflow processing error.";
-  }
-
-  private async blockStep(
-    workflowRunId: string,
-    workflowStepId: string,
-    attemptCount: number,
-    decision: Extract<ReturnType<WorkflowDefinition["reviewPolicy"]>, { kind: "block" }>,
-  ) {
-    await this.input.store.updateStepStatus(workflowStepId, "waiting_for_human", attemptCount);
-    await this.input.store.updateRunStatus(workflowRunId, "waiting_for_human", decision.summary);
-    await this.input.store.createReview({ workflowRunId, workflowStepId, decision });
-    await this.input.store.appendEvent({
-      workflowRunId,
-      type: "review.created",
-      summary: decision.summary,
-      actorType: "worker",
-      payload: decision,
-    });
-  }
-
   private async markScheduleFailed(workflowRunId: string, workflowStepId: string, error: unknown) {
-    const message = this.errorMessage(error);
+    const message = errorMessage(error);
     const summary = "Workflow step scheduling will be retried.";
     await this.input.store.appendEvent({
       workflowRunId,
@@ -628,22 +480,8 @@ export class WorkflowEngine {
   }
 
   private payloadNumber(payload: unknown, key: string) {
-    if (!this.isPayload(payload)) return 0;
+    if (!isPayload(payload)) return 0;
     const value = payload[key];
     return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0;
-  }
-
-  private payloadBoolean(payload: unknown, key: string, fallback: boolean) {
-    if (!this.isPayload(payload)) return fallback;
-    const value = payload[key];
-    return typeof value === "boolean" ? value : fallback;
-  }
-
-  private hasLiveOutboundCall(payload: unknown) {
-    return this.isPayload(payload) && typeof payload.outboundCallId === "string" && payload.awaitingCallCompletion === true;
-  }
-
-  private isPayload(payload: unknown): payload is Record<string, unknown> {
-    return typeof payload === "object" && payload !== null;
   }
 }
