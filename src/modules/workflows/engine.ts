@@ -1,6 +1,5 @@
 import type { FollowUpDecision } from "@/modules/phone/follow-up-policy";
-import { advanceDueStep as advanceDueStepExternal, type ExecuteStepOutcome } from "./execution";
-import { blockStep, isPayload, serializeDecision } from "./transitions";
+import { blockStep, serializeDecision } from "./transitions";
 import type { WorkflowRunRecord, WorkflowStepRecord, WorkflowStore } from "./store";
 import type { ReviewDecision, WorkflowAction, WorkflowDefinition } from "./types";
 
@@ -28,79 +27,6 @@ export class WorkflowEngine {
 
   async getStep(id: string): Promise<WorkflowStepRecord> {
     return this.input.store.getStep(id);
-  }
-
-  async advanceDueStep(stepId: string, now: Date): Promise<ExecuteStepOutcome> {
-    return advanceDueStepExternal({ store: this.input.store, outboundCaller: this.input.outboundCaller }, stepId, now);
-  }
-
-  async runFollowUpNow(workflowRunId: string, now: Date): Promise<{ ok: boolean; message: string }> {
-    const run = await this.input.store.getRun(workflowRunId);
-    if (run.status === "waiting_for_human") {
-      return {
-        ok: false,
-        message: "This workflow is waiting for human review. Outreach is paused until a reviewer resumes it.",
-      };
-    }
-    if (run.status !== "active") {
-      return {
-        ok: false,
-        message: `This workflow is ${run.status}, so a follow-up cannot be run now.`,
-      };
-    }
-
-    const definition = this.definitionFor(run.definitionId);
-    const steps = await this.input.store.listSteps(workflowRunId);
-    let step = steps
-      .filter((item) => item.status === "due")
-      .sort((left, right) => left.dueAt.getTime() - right.dueAt.getTime())[0];
-
-    if (!step) {
-      const template = definition.stepTemplates[0];
-      if (!template) {
-        return { ok: false, message: "This workflow has no follow-up step type to run." };
-      }
-      step = await this.input.store.createStep({
-        workflowRunId,
-        stepType: template.type,
-        label: template.label,
-        dueAt: now,
-        payload: { reason: "Immediate follow-up requested.", requestedByUser: true },
-      });
-    } else if (step.dueAt > now) {
-      await this.input.store.updateStepPayload(step.id, { requestedByUser: true });
-      await this.input.store.rescheduleStep(step.id, now);
-    }
-
-    try {
-      await this.advanceDueStep(step.id, now);
-    } catch (error) {
-      return {
-        ok: false,
-        message: `The follow-up could not be executed: ${error instanceof Error ? error.message : "unknown error."}`,
-      };
-    }
-    const after = await this.input.store.getStep(step.id);
-    if (after.status === "due") {
-      return { ok: false, message: "The follow-up is still queued and was not executed." };
-    }
-    if (after.status === "waiting_for_human") {
-      return { ok: true, message: "Outreach is blocked pending human review." };
-    }
-
-    const updated = await this.input.store.getRun(workflowRunId);
-    const next = (await this.input.store.listSteps(workflowRunId))
-      .filter((item) => item.status === "due")
-      .sort((left, right) => left.dueAt.getTime() - right.dueAt.getTime())[0];
-    const nextText = next
-      ? ` Next follow-up: ${next.label} at ${next.dueAt.toISOString()}.`
-      : updated.status === "waiting_for_human"
-        ? " Human review is now required before outreach can continue."
-        : " No further follow-up is scheduled.";
-    return {
-      ok: true,
-      message: `Follow-up call placed to ${updated.title}. The conversation outcome will be recorded when the call completes.${nextText}`,
-    };
   }
 
   async applyAction(action: WorkflowAction): Promise<{ ok: boolean; message: string }> {
@@ -431,11 +357,5 @@ export class WorkflowEngine {
     if (source === "worker") return "worker" as const;
     if (source === "reviewer") return "reviewer" as const;
     return "voice_agent" as const;
-  }
-
-  private payloadNumber(payload: unknown, key: string) {
-    if (!isPayload(payload)) return 0;
-    const value = payload[key];
-    return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0;
   }
 }

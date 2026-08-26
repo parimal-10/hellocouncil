@@ -421,6 +421,16 @@ async function main() {
     },
   ]);
 
+  const activeRuns = [shahRun, coleRun, parkRun, riveraRun];
+  for (const run of activeRuns) {
+    try {
+      const { startWorkflowRun } = await import("@/temporal/start-run");
+      await startWorkflowRun({ workflowRunId: run.id });
+    } catch (error) {
+      console.warn(`Seed could not start Temporal workflow for run ${run.id}; continuing without execution.`, error);
+    }
+  }
+
   await pool.end();
 }
 

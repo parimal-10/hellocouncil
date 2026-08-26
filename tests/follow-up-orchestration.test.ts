@@ -3,6 +3,7 @@ import { applyOutboundCallFollowUp } from "@/modules/phone/orchestration";
 import type { OutboundFollowUpPort } from "@/modules/phone/orchestration";
 import type { PhoneCallRecord } from "@/modules/phone/types";
 import { WorkflowEngine } from "@/modules/workflows/engine";
+import { advanceDueStep } from "@/modules/workflows/execution";
 import { clientCheckInDefinition, medicalRecordsFollowUpDefinition } from "@/modules/workflows/definitions";
 import { MemoryPhoneCallStore } from "./phone-test-store";
 import { TestWorkflowStore } from "./test-store";
@@ -80,9 +81,8 @@ describe("worker auto-dial", () => {
   it("defers a due client check-in outside local business hours without placing a call", async () => {
     const store = storeWithClientCheckIn();
     const dialer = stubDialer();
-    const engine = new WorkflowEngine({ store, definitions, outboundCaller: dialer });
 
-    await engine.advanceDueStep("step-1", chicagoEarly);
+    await advanceDueStep({ store, outboundCaller: dialer }, "step-1", chicagoEarly);
 
     expect(dialer.placed).toEqual([]);
     expect(store.steps.get("step-1")?.status).toBe("due");
@@ -98,9 +98,8 @@ describe("worker auto-dial", () => {
   it("places an outbound call for a due client check-in and leaves the step running", async () => {
     const store = storeWithClientCheckIn();
     const dialer = stubDialer();
-    const engine = new WorkflowEngine({ store, definitions, outboundCaller: dialer });
 
-    await engine.advanceDueStep("step-1", chicagoNoon);
+    await advanceDueStep({ store, outboundCaller: dialer }, "step-1", chicagoNoon);
 
     expect(dialer.placed).toEqual(["step-1"]);
     expect(store.steps.get("step-1")?.status).toBe("running");
@@ -116,13 +115,8 @@ describe("worker auto-dial", () => {
     store.runs.set("run-1", { ...store.runs.get("run-1")!, definitionId: "medical-records-follow-up" });
     store.steps.set("step-1", { ...store.steps.get("step-1")!, stepType: "provider_follow_up", label: "Follow up with provider" });
     const dialer = stubDialer();
-    const engine = new WorkflowEngine({
-      store,
-      definitions,
-      outboundCaller: dialer,
-    });
 
-    await engine.advanceDueStep("step-1", chicagoNoon);
+    await advanceDueStep({ store, outboundCaller: dialer }, "step-1", chicagoNoon);
 
     expect(dialer.placed).toEqual(["step-1"]);
     expect(store.steps.get("step-1")?.status).toBe("running");

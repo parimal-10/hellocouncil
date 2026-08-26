@@ -1,7 +1,7 @@
 import { routeWorkflowAction, type WorkflowActionResult } from "@/modules/workflows/action-router";
 import { loadWorkflowBriefing } from "@/modules/workflows/briefing";
 import { getWorkflowDefinition, workflowDefinitions } from "@/modules/workflows/definitions";
-import { WorkflowEngine, type OutboundFollowUpPort } from "@/modules/workflows/engine";
+import { WorkflowEngine } from "@/modules/workflows/engine";
 import type { WorkflowStore } from "@/modules/workflows/store";
 import type { VoiceSessionPersistence } from "@/modules/voice/store";
 import type { ReviewBlockReason, WorkflowAction, WorkflowDefinition } from "@/modules/workflows/types";
@@ -35,6 +35,64 @@ class VoiceToolPublicError extends Error {}
 
 const safeInfrastructureMessage = "The voice workflow tool could not be completed.";
 
+export type SignalRunImpl = (options: {
+  workflowRunId: string;
+  signal: string;
+  args: unknown[];
+}) => Promise<void>;
+
+async function defaultSignalRun(options: { workflowRunId: string; signal: string; args: unknown[] }) {
+  const { signalRun } = await import("@/temporal/start-run");
+  await signalRun(options as Parameters<typeof signalRun>[0]);
+}
+
+async function requestImmediateFollowUp(input: {
+  workflowRunId: string;
+  now: Date;
+  store: WorkflowStore;
+  signalRun: SignalRunImpl;
+}): Promise<WorkflowActionResult> {
+  const run = await input.store.getRun(input.workflowRunId);
+  if (run.status === "waiting_for_human") {
+    return {
+      ok: false,
+      message: "This workflow is waiting for human review. Outreach is paused until a reviewer resumes it.",
+    };
+  }
+  if (run.status !== "active") {
+    return {
+      ok: false,
+      message: `This workflow is ${run.status}, so a follow-up cannot be run now.`,
+    };
+  }
+
+  const definition = getWorkflowDefinition(run.definitionId);
+  const steps = await input.store.listSteps(input.workflowRunId);
+  const step = steps
+    .filter((item) => item.status === "due")
+    .sort((left, right) => left.dueAt.getTime() - right.dueAt.getTime())[0];
+
+  if (!step) {
+    const template = definition.stepTemplates[0];
+    if (!template) {
+      return { ok: false, message: "This workflow has no follow-up step type to run." };
+    }
+    await input.store.createStep({
+      workflowRunId: input.workflowRunId,
+      stepType: template.type,
+      label: template.label,
+      dueAt: input.now,
+      payload: { reason: "Immediate follow-up requested.", requestedByUser: true },
+    });
+  } else if (step.dueAt > input.now) {
+    await input.store.rescheduleStep(step.id, input.now);
+    await input.store.updateStepPayload(step.id, { requestedByUser: true });
+  }
+
+  await input.signalRun({ workflowRunId: input.workflowRunId, signal: "runFollowUpNow", args: [] });
+  return { ok: true, message: "Follow-up requested. The workflow will place the call shortly." };
+}
+
 export async function executeVoiceWorkflowTool(input: {
   workflowRunId: string;
   toolName: string;
@@ -44,7 +102,7 @@ export async function executeVoiceWorkflowTool(input: {
   voiceSessionId?: string;
   toolCallId?: string;
   loadBriefing?: typeof loadWorkflowBriefing;
-  outboundCaller?: OutboundFollowUpPort;
+  signalRunImpl?: SignalRunImpl;
   now?: Date;
 }): Promise<WorkflowActionResult> {
   const eventContext = voiceEventContext(input);
@@ -93,12 +151,12 @@ export async function executeVoiceWorkflowTool(input: {
       const briefing = await (input.loadBriefing ?? loadWorkflowBriefing)(workflowRunId, input.now);
       result = { ok: true, message: briefing.spokenSummary };
     } else if (input.toolName === "run_follow_up_now") {
-      const engine = new WorkflowEngine({
+      result = await requestImmediateFollowUp({
+        workflowRunId,
+        now: input.now ?? new Date(),
         store,
-        definitions: workflowDefinitions,
-        outboundCaller: input.outboundCaller ?? (await resolveOutboundCaller()),
+        signalRun: input.signalRunImpl ?? defaultSignalRun,
       });
-      result = await engine.runFollowUpNow(workflowRunId, input.now ?? new Date());
     } else {
       const action = toWorkflowAction(workflowRunId, input.toolName, input.payload);
       const run = await store.getRun(workflowRunId);
@@ -129,9 +187,23 @@ export async function executeVoiceWorkflowTool(input: {
       const engine = new WorkflowEngine({
         store,
         definitions: workflowDefinitions,
-        outboundCaller: input.outboundCaller ?? (await resolveOutboundCaller()),
       });
-      result = await routeWorkflowAction({ action: resolvedAction, definition, engine });
+      if (resolvedAction.type === "schedule_follow_up") {
+        result = await engine.applyAction(resolvedAction);
+        await (input.signalRunImpl ?? defaultSignalRun)({
+          workflowRunId,
+          signal: "scheduleFollowUp",
+          args: [
+            {
+              stepType: resolvedAction.stepType,
+              dueAt: resolvedAction.dueAt.toISOString(),
+              reason: resolvedAction.reason,
+            },
+          ],
+        });
+      } else {
+        result = await routeWorkflowAction({ action: resolvedAction, definition, engine });
+      }
     }
   } catch (error) {
     const safeError = safeVoiceToolError(error);
@@ -164,19 +236,6 @@ export async function executeVoiceWorkflowTool(input: {
 async function defaultWorkflowStore() {
   const { DrizzleWorkflowStore } = await import("@/modules/workflows/store");
   return new DrizzleWorkflowStore();
-}
-
-async function resolveOutboundCaller(): Promise<OutboundFollowUpPort | undefined> {
-  const [{ isAutomaticOutboundCallingEnabled }, { createWorkerOutboundDialer }] = await Promise.all([
-    import("@/modules/phone/auto-dial"),
-    import("@/modules/phone/worker-dialer"),
-  ]);
-  if (!isAutomaticOutboundCallingEnabled()) return undefined;
-  try {
-    return createWorkerOutboundDialer();
-  } catch {
-    return undefined;
-  }
 }
 
 function isVoiceToolName(value: string): value is VoiceToolName {

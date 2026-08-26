@@ -97,7 +97,6 @@ describe("structured workflow actions", () => {
     );
     expect(store.events.map((event) => event.type)).toContain("action.mark_contact_attempt");
   });
-
   it("creates a due step and logs the schedule for schedule_follow_up", async () => {
     const store = storeWithRun();
     const engine = new WorkflowEngine({ store, definitions: workflowDefinitions });
@@ -125,58 +124,6 @@ describe("structured workflow actions", () => {
         payload: { stepId: "step-1", stepType: "provider_follow_up", dueAt: dueAt.toISOString() },
       }),
     );
-  });
-
-  it("runs a scheduled follow-up immediately by placing the outbound call", async () => {
-    const store = storeWithRun();
-    store.steps.set("step-1", {
-      id: "step-1",
-      workflowRunId: "run-1",
-      stepType: "provider_follow_up",
-      label: "Follow up with provider",
-      status: "due",
-      dueAt: new Date("2026-08-25T10:00:00.000Z"),
-      attemptCount: 0,
-      payload: {},
-    });
-    const placedCalls: Array<{ workflowRunId: string; stepId: string }> = [];
-    const engine = new WorkflowEngine({
-      store,
-      definitions: workflowDefinitions,
-      outboundCaller: {
-        evaluateWindow: async () => ({ timeZone: "America/New_York" }),
-        placeCall: async (input) => {
-          placedCalls.push(input);
-          return { callId: "call-now-1" };
-        },
-      },
-    });
-
-    const result = await engine.runFollowUpNow("run-1", new Date("2026-08-24T12:00:00.000Z"));
-
-    expect(result.ok).toBe(true);
-    expect(result.message).toContain("Follow-up call placed");
-    expect(placedCalls).toEqual([
-      { workflowRunId: "run-1", stepId: "step-1", now: new Date("2026-08-24T12:00:00.000Z") },
-    ]);
-    expect(store.steps.get("step-1")?.status).toBe("running");
-    expect(store.steps.get("step-1")?.payload).toMatchObject({
-      outboundCallId: "call-now-1",
-      awaitingCallCompletion: true,
-      requestedByUser: true,
-    });
-  });
-
-  it("refuses to run outreach while the workflow is waiting for human review", async () => {
-    const store = storeWithRun();
-    addBlockedReview(store);
-    const engine = new WorkflowEngine({ store, definitions: workflowDefinitions });
-
-    await expect(engine.runFollowUpNow("run-1", new Date("2026-08-24T12:00:00.000Z"))).resolves.toEqual({
-      ok: false,
-      message: "This workflow is waiting for human review. Outreach is paused until a reviewer resumes it.",
-    });
-    expect(store.steps.get("step-1")?.status).toBe("waiting_for_human");
   });
 });
 

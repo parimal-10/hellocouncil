@@ -192,6 +192,7 @@ describe("voice agent tools", () => {
 
   it("routes schedule_follow_up with a validated date", async () => {
     const store = storeWithRun();
+    const signals: Array<{ workflowRunId: string; signal: string; args: unknown[] }> = [];
 
     await executeVoiceWorkflowTool({
       workflowRunId: "run-1",
@@ -202,6 +203,9 @@ describe("voice agent tools", () => {
         reason: "Call the provider tomorrow.",
       },
       store,
+      signalRunImpl: async (options) => {
+        signals.push(options);
+      },
     });
 
     expect(store.steps.get("step-1")).toMatchObject({
@@ -210,17 +214,34 @@ describe("voice agent tools", () => {
       dueAt: new Date("2026-08-24T10:00:00.000Z"),
       payload: { reason: "Call the provider tomorrow." },
     });
+    expect(signals).toEqual([
+      {
+        workflowRunId: "run-1",
+        signal: "scheduleFollowUp",
+        args: [
+          {
+            stepType: "provider_follow_up",
+            dueAt: "2026-08-24T10:00:00.000Z",
+            reason: "Call the provider tomorrow.",
+          },
+        ],
+      },
+    ]);
   });
 
   it("defaults schedule_follow_up step type and due date from the workflow definition", async () => {
     const store = storeWithRun();
     const now = new Date("2026-08-24T10:00:00.000Z");
+    const signals: Array<{ workflowRunId: string; signal: string; args: unknown[] }> = [];
 
     await executeVoiceWorkflowTool({
       workflowRunId: "run-1",
       toolName: "schedule_follow_up",
       payload: { reason: "Call the provider again." },
       store,
+      signalRunImpl: async (options) => {
+        signals.push(options);
+      },
       now,
     });
 
@@ -230,6 +251,19 @@ describe("voice agent tools", () => {
       dueAt: new Date("2026-08-25T10:00:00.000Z"),
       payload: { reason: "Call the provider again." },
     });
+    expect(signals).toEqual([
+      {
+        workflowRunId: "run-1",
+        signal: "scheduleFollowUp",
+        args: [
+          {
+            stepType: "provider_follow_up",
+            dueAt: "2026-08-25T10:00:00.000Z",
+            reason: "Call the provider again.",
+          },
+        ],
+      },
+    ]);
   });
 
   it("returns the spoken case briefing for get_workflow_status", async () => {
@@ -259,7 +293,7 @@ describe("voice agent tools", () => {
     });
   });
 
-  it("runs the next follow-up immediately by placing the outbound call", async () => {
+  it("requests an immediate follow-up by rescheduling the due step and signalling the workflow", async () => {
     const store = storeWithRun();
     store.steps.set("step-1", {
       id: "step-1",
@@ -267,33 +301,82 @@ describe("voice agent tools", () => {
       stepType: "provider_follow_up",
       label: "Follow up with provider",
       status: "due",
-      dueAt: new Date("2026-08-24T09:00:00.000Z"),
+      dueAt: new Date("2026-08-24T18:00:00.000Z"),
       attemptCount: 0,
       payload: {},
     });
-    const placedCalls: Array<{ workflowRunId: string; stepId: string }> = [];
+    const signals: Array<{ workflowRunId: string; signal: string; args: unknown[] }> = [];
 
     const result = await executeVoiceWorkflowTool({
       workflowRunId: "run-1",
       toolName: "run_follow_up_now",
       payload: {},
       store,
-      outboundCaller: {
-        evaluateWindow: async () => ({ timeZone: "America/New_York" }),
-        placeCall: async (input) => {
-          placedCalls.push(input);
-          return { callId: "call-voice-1" };
-        },
+      signalRunImpl: async (options) => {
+        signals.push(options);
       },
       now: new Date("2026-08-24T15:00:00.000Z"),
     });
 
-    expect(result.ok).toBe(true);
-    expect(result.message).toContain("Follow-up call placed");
-    expect(placedCalls).toEqual([
-      { workflowRunId: "run-1", stepId: "step-1", now: new Date("2026-08-24T15:00:00.000Z") },
-    ]);
-    expect(store.steps.get("step-1")?.status).toBe("running");
+    expect(result).toEqual({
+      ok: true,
+      message: "Follow-up requested. The workflow will place the call shortly.",
+    });
+    expect(store.steps.get("step-1")?.status).toBe("due");
+    expect(store.steps.get("step-1")?.dueAt).toEqual(new Date("2026-08-24T15:00:00.000Z"));
+    expect(store.steps.get("step-1")?.payload).toMatchObject({ requestedByUser: true });
+    expect(signals).toEqual([{ workflowRunId: "run-1", signal: "runFollowUpNow", args: [] }]);
+  });
+
+  it("creates an immediate due step before signalling when no step is due", async () => {
+    const store = storeWithRun();
+    const signals: Array<{ workflowRunId: string; signal: string; args: unknown[] }> = [];
+
+    const result = await executeVoiceWorkflowTool({
+      workflowRunId: "run-1",
+      toolName: "run_follow_up_now",
+      payload: {},
+      store,
+      signalRunImpl: async (options) => {
+        signals.push(options);
+      },
+      now: new Date("2026-08-24T15:00:00.000Z"),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      message: "Follow-up requested. The workflow will place the call shortly.",
+    });
+    expect([...store.steps.values()][0]).toMatchObject({
+      workflowRunId: "run-1",
+      stepType: "provider_follow_up",
+      status: "due",
+      dueAt: new Date("2026-08-24T15:00:00.000Z"),
+      payload: { reason: "Immediate follow-up requested.", requestedByUser: true },
+    });
+    expect(signals).toEqual([{ workflowRunId: "run-1", signal: "runFollowUpNow", args: [] }]);
+  });
+
+  it("refuses to request a follow-up while the workflow is waiting for human review", async () => {
+    const store = storeWithRun();
+    store.runs.set("run-1", { ...store.runs.get("run-1")!, status: "waiting_for_human" });
+    const signals: Array<{ workflowRunId: string; signal: string; args: unknown[] }> = [];
+
+    const result = await executeVoiceWorkflowTool({
+      workflowRunId: "run-1",
+      toolName: "run_follow_up_now",
+      payload: {},
+      store,
+      signalRunImpl: async (options) => {
+        signals.push(options);
+      },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      message: "This workflow is waiting for human review. Outreach is paused until a reviewer resumes it.",
+    });
+    expect(signals).toEqual([]);
   });
 
   it("routes add_review_note only when the review belongs to the active run", async () => {

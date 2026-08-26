@@ -1,11 +1,7 @@
 import { handleCallStatus } from "@/modules/phone/service";
-import { applyOutboundCallFollowUp } from "@/modules/phone/orchestration";
 import { DrizzlePhoneCallStore } from "@/modules/phone/store";
 import { isTerminalConnectionStatus } from "@/modules/phone/status";
 import { authorizeTwilioWebhook, createCallLlmClient, loadPhoneRuntimeConfig, readTwilioForm, twilioWebhookUrlCandidates } from "@/modules/phone/config";
-import { workflowDefinitions } from "@/modules/workflows/definitions";
-import { WorkflowEngine } from "@/modules/workflows/engine";
-import { DrizzleWorkflowStore } from "@/modules/workflows/store";
 
 export async function POST(request: Request) {
   const config = loadPhoneRuntimeConfig();
@@ -38,11 +34,12 @@ export async function POST(request: Request) {
   });
 
   if (isTerminalConnectionStatus(call.connectionStatus)) {
-    const engine = new WorkflowEngine({
-      store: new DrizzleWorkflowStore(),
-      definitions: workflowDefinitions,
+    const { signalRun } = await import("@/temporal/start-run");
+    await signalRun({
+      workflowRunId: call.workflowRunId,
+      signal: "callCompleted",
+      args: [{ callId: call.id }],
     });
-    await applyOutboundCallFollowUp({ call, now, engine, phoneStore });
   }
 
   return new Response(null, { status: 204 });

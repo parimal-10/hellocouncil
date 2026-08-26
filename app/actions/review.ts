@@ -21,12 +21,19 @@ export async function resolveReviewAction(formData: FormData) {
   if (resolution === "note") {
     await engine.applyAction({ type: "add_review_note", reviewRequestId, note, source: "reviewer" });
   } else {
+    const reviewBefore = await new DrizzleWorkflowStore().getReview(reviewRequestId);
     await engine.applyAction({
       type: "resolve_blocked_step",
       reviewRequestId,
       resolution,
       note,
       assignedUserId,
+    });
+    const { signalRun } = await import("@/temporal/start-run");
+    await signalRun({
+      workflowRunId: reviewBefore.workflowRunId,
+      signal: "reviewResolved",
+      args: [],
     });
   }
 

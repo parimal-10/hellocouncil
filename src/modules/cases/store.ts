@@ -13,6 +13,9 @@ import {
   workflowSteps,
 } from "@/db/schema";
 import type { NewCaseInput, CaseUpdate, OrganizationUpdate, PersonUpdate } from "./update";
+import type { startWorkflowRun } from "@/temporal/start-run";
+
+type StartWorkflowRun = typeof startWorkflowRun;
 
 export async function listFirmUsers() {
   return db
@@ -22,7 +25,10 @@ export async function listFirmUsers() {
     .orderBy(asc(people.name));
 }
 
-export async function createCaseRecord(input: NewCaseInput) {
+export async function createCaseRecord(
+  input: NewCaseInput,
+  opts?: { startWorkflowRun?: StartWorkflowRun },
+) {
   const [owner] = await db
     .select({ id: people.id })
     .from(people)
@@ -116,6 +122,20 @@ export async function createCaseRecord(input: NewCaseInput) {
       actorType: "system",
       payload: {},
     });
+
+    try {
+      const startWorkflowRun =
+        opts?.startWorkflowRun ?? (await import("@/temporal/start-run")).startWorkflowRun;
+      await startWorkflowRun({ workflowRunId: run.id });
+    } catch (error) {
+      await db.insert(workflowEvents).values({
+        workflowRunId: run.id,
+        type: "step.schedule_failed",
+        summary: "Workflow execution could not be started; it will be recovered by the next signal or worker restart.",
+        actorType: "system",
+        payload: { error: error instanceof Error ? error.message : "unknown" },
+      });
+    }
   }
 
   return caseRecord.id;
