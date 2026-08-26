@@ -1,10 +1,13 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { db } from "@/db/client";
 import { humanReviewRequests, workflowRuns } from "@/db/schema";
-import { advanceDueStep } from "@/modules/workflows/execution";
+import { advanceDueStep, type ExecuteStepOutcome } from "@/modules/workflows/execution";
 import { workflowDefinitions } from "@/modules/workflows/definitions";
 import { WorkflowEngine } from "@/modules/workflows/engine";
+import type { WorkflowStore } from "@/modules/workflows/store";
 import { DrizzleWorkflowStore } from "@/modules/workflows/store";
+import { isAutomaticOutboundCallingEnabled } from "@/modules/phone/auto-dial";
+import type { OutboundFollowUpPort } from "@/modules/phone/orchestration";
 import { DrizzlePhoneCallStore } from "@/modules/phone/store";
 import { createWorkerOutboundDialer } from "@/modules/phone/worker-dialer";
 import { makeApplyCallOutcome, makeLoadRunState } from "./runtime";
@@ -17,12 +20,27 @@ export async function loadRunState(input: { workflowRunId: string }): Promise<Ru
   })(input);
 }
 
+export type ExecuteDueStepActivityDeps = {
+  storeFactory: () => WorkflowStore;
+  outboundCallerFactory: () => OutboundFollowUpPort;
+  isAutoOutboundEnabled?: () => boolean;
+};
+
+export function makeExecuteDueStepActivity(deps: ExecuteDueStepActivityDeps) {
+  return async function executeDueStep(input: { stepId: string }): Promise<ExecuteStepOutcome> {
+    const isAutoOutboundEnabled = deps.isAutoOutboundEnabled ?? isAutomaticOutboundCallingEnabled;
+    // No simulated fallback: when AUTO_OUTBOUND_CALLS is off the dialer must not
+    // even be constructed; advanceDueStep then takes its refuse-and-recover path.
+    const outboundCaller = isAutoOutboundEnabled() ? deps.outboundCallerFactory() : undefined;
+    return advanceDueStep({ store: deps.storeFactory(), outboundCaller }, input.stepId, new Date());
+  };
+}
+
 export async function executeDueStep(input: { stepId: string }) {
-  return advanceDueStep(
-    { store: new DrizzleWorkflowStore(), outboundCaller: createWorkerOutboundDialer() },
-    input.stepId,
-    new Date(),
-  );
+  return makeExecuteDueStepActivity({
+    storeFactory: () => new DrizzleWorkflowStore(),
+    outboundCallerFactory: createWorkerOutboundDialer,
+  })(input);
 }
 
 export async function applyCallOutcome(input: { callId: string }): Promise<{ applied: boolean }> {
@@ -43,15 +61,21 @@ export async function recordTemporalWorkflowId(input: {
     .where(eq(workflowRuns.id, input.workflowRunId));
 }
 
-async function listOpenReviewIdsForRun(workflowRunId: string): Promise<Array<{ id: string }>> {
-  return db
+export const OPEN_REVIEW_STATUSES = ["open", "assigned"] as const;
+
+export function openReviewsForRunQuery(client: typeof db, workflowRunId: string) {
+  return client
     .select({ id: humanReviewRequests.id })
     .from(humanReviewRequests)
     .where(
       and(
         eq(humanReviewRequests.workflowRunId, workflowRunId),
-        eq(humanReviewRequests.status, "open"),
+        inArray(humanReviewRequests.status, [...OPEN_REVIEW_STATUSES]),
       ),
     )
     .orderBy(asc(humanReviewRequests.createdAt));
+}
+
+async function listOpenReviewIdsForRun(workflowRunId: string): Promise<Array<{ id: string }>> {
+  return openReviewsForRunQuery(db, workflowRunId);
 }

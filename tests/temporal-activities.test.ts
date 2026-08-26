@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { makeApplyCallOutcome, makeExecuteDueStep, makeLoadRunState } from "@/temporal/activities/runtime";
+import { makeExecuteDueStepActivity, openReviewsForRunQuery } from "@/temporal/activities/index";
+import { db } from "@/db/client";
 import { WorkflowEngine } from "@/modules/workflows/engine";
 import type { OutboundFollowUpPort } from "@/modules/phone/orchestration";
 import type { PhoneCallRecord } from "@/modules/phone/types";
@@ -261,5 +263,80 @@ describe("makeExecuteDueStep", () => {
     const outcome = await execute({ stepId: "step-1", now });
 
     expect(outcome).toEqual({ kind: "noop" });
+  });
+});
+
+describe("executeDueStep AUTO_OUTBOUND_CALLS gating", () => {
+  it("does not construct the dialer and refuses-and-recovers when the flag is off", async () => {
+    const store = storeWithClientCheckIn();
+    // The activity uses the real clock, so make the step unconditionally due.
+    store.steps.set("step-1", { ...store.steps.get("step-1")!, dueAt: new Date(0) });
+    const dialerFactory = vi.fn(() => stubDialer());
+    const execute = makeExecuteDueStepActivity({
+      storeFactory: () => store,
+      outboundCallerFactory: dialerFactory,
+      isAutoOutboundEnabled: () => false,
+    });
+
+    await expect(execute({ stepId: "step-1" })).rejects.toThrow(/AUTO_OUTBOUND_CALLS/);
+
+    expect(dialerFactory).not.toHaveBeenCalled();
+    expect(store.steps.get("step-1")?.status).toBe("due");
+    expect(store.events.some((event) => event.type === "step.processing_failed")).toBe(true);
+  });
+
+  it("constructs the dialer and places the call when the flag is on", async () => {
+    const store = storeWithClientCheckIn();
+    store.steps.set("step-1", { ...store.steps.get("step-1")!, dueAt: new Date(0) });
+    const dialer = stubDialer();
+    const dialerFactory = vi.fn(() => dialer);
+    const execute = makeExecuteDueStepActivity({
+      storeFactory: () => store,
+      outboundCallerFactory: dialerFactory,
+      isAutoOutboundEnabled: () => true,
+    });
+
+    const outcome = await execute({ stepId: "step-1" });
+
+    // The real clock may fall outside business hours, in which case
+    // advanceDueStep legitimately defers instead of placing.
+    expect(["placed", "deferred_to_window"]).toContain(outcome.kind);
+    expect(dialerFactory).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("openReviewsForRunQuery", () => {
+  it("treats assigned reviews as pending human work alongside open ones", () => {
+    const { sql, params } = openReviewsForRunQuery(db, "run-1").toSQL();
+
+    expect(params).toContain("run-1");
+    expect(params).toContain("open");
+    expect(params).toContain("assigned");
+    expect(sql).toContain("human_review_requests");
+  });
+});
+
+describe("loadRunState with an assigned review", () => {
+  it("surfaces an assigned review as openReviewId and defers execution", async () => {
+    const store = storeWithClientCheckIn();
+    store.reviews.push({
+      id: "review-1",
+      status: "assigned",
+      workflowRunId: "run-1",
+      workflowStepId: "step-1",
+      decision: {
+        kind: "block",
+        reason: "failed_contact_threshold",
+        severity: "medium",
+        recommendedAction: "Review contact strategy.",
+        summary: "Too many failed connects.",
+      },
+    });
+    const load = makeLoadRunState({ workflowStore: store, listOpenReviews: listOpenReviews(store) });
+
+    const snapshot = await load({ workflowRunId: "run-1", now });
+
+    expect(snapshot.openReviewId).toBe("review-1");
+    expect(snapshot.dueStepId).toBeNull();
   });
 });
