@@ -120,7 +120,6 @@ describe("worker auto-dial", () => {
       store,
       definitions,
       outboundCaller: dialer,
-      scheduler: { scheduleDueStep: async () => "job-1" },
     });
 
     await engine.advanceDueStep("step-1", chicagoNoon);
@@ -187,7 +186,6 @@ describe("applyOutboundCallFollowUp", () => {
     const engine = new WorkflowEngine({
       store,
       definitions,
-      scheduler: { scheduleDueStep: async () => "job-1" },
     });
 
     await applyOutboundCallFollowUp({

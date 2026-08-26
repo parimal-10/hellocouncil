@@ -98,19 +98,9 @@ describe("structured workflow actions", () => {
     expect(store.events.map((event) => event.type)).toContain("action.mark_contact_attempt");
   });
 
-  it("creates and enqueues a due step for schedule_follow_up", async () => {
+  it("creates a due step and logs the schedule for schedule_follow_up", async () => {
     const store = storeWithRun();
-    const scheduled: Array<{ stepId: string; runAt: Date }> = [];
-    const engine = new WorkflowEngine({
-      store,
-      definitions: workflowDefinitions,
-      scheduler: {
-        scheduleDueStep: async (input) => {
-          scheduled.push(input);
-          return "job-1";
-        },
-      },
-    });
+    const engine = new WorkflowEngine({ store, definitions: workflowDefinitions });
     const dueAt = new Date("2026-08-24T10:00:00.000Z");
 
     await engine.applyAction({
@@ -125,33 +115,16 @@ describe("structured workflow actions", () => {
       workflowRunId: "run-1",
       stepType: "provider_follow_up",
       status: "due",
-      queueJobScheduledAt: expect.any(Date),
       payload: { reason: "Provider requested a call tomorrow." },
     });
-    expect(scheduled).toEqual([{ stepId: "step-1", runAt: dueAt }]);
-    expect(store.events.map((event) => event.type)).toContain("step.scheduled");
-  });
-
-  it("keeps a follow-up due for reconciliation when enqueueing fails", async () => {
-    const store = storeWithRun();
-    const engine = new WorkflowEngine({
-      store,
-      definitions: workflowDefinitions,
-      scheduler: { scheduleDueStep: async () => { throw new Error("queue unavailable"); } },
-    });
-
-    await expect(
-      engine.applyAction({
-        type: "schedule_follow_up",
-        workflowRunId: "run-1",
-        dueAt: new Date("2026-08-24T10:00:00.000Z"),
-        stepType: "provider_follow_up",
-        reason: "Retry tomorrow.",
+    expect(store.events).toContainEqual(
+      expect.objectContaining({
+        type: "step.scheduled",
+        summary: "Provider requested a call tomorrow.",
+        actorType: "voice_agent",
+        payload: { stepId: "step-1", stepType: "provider_follow_up", dueAt: dueAt.toISOString() },
       }),
-    ).resolves.toEqual(expect.objectContaining({ ok: true }));
-
-    expect(store.steps.get("step-1")).toMatchObject({ status: "due", queueJobScheduledAt: null });
-    expect(store.events.map((event) => event.type)).toContain("step.schedule_failed");
+    );
   });
 
   it("runs a scheduled follow-up immediately by placing the outbound call", async () => {
@@ -283,7 +256,6 @@ describe("review actions", () => {
     expect(store.reviews[0]?.status).toBe("rejected");
     expect(store.steps.get("step-1")?.status).toBe("skipped");
     expect(store.runs.get("run-1")?.status).toBe("failed");
-    expect(store.steps.get("step-1")?.queueJobScheduledAt).toBeFalsy();
   });
 
   it("adds an auditable note without changing review or workflow status", async () => {

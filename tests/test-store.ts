@@ -22,16 +22,6 @@ export class TestWorkflowStore implements WorkflowStore {
     return run;
   }
 
-  async getDueSteps(now: Date) {
-    return [...this.steps.values()].filter(
-      (step) =>
-        step.status === "due" &&
-        step.dueAt <= now &&
-        !step.queueJobScheduledAt &&
-        (!step.queueSchedulingClaimUntil || step.queueSchedulingClaimUntil <= now),
-    );
-  }
-
   async listSteps(workflowRunId: string) {
     return [...this.steps.values()]
       .filter((step) => step.workflowRunId === workflowRunId)
@@ -70,44 +60,6 @@ export class TestWorkflowStore implements WorkflowStore {
     return claimedStep;
   }
 
-  async claimDueStepForScheduling(id: string, now: Date, claimUntil: Date) {
-    const step = this.steps.get(id);
-    if (
-      !step ||
-      step.status !== "due" ||
-      step.dueAt > now ||
-      step.queueJobScheduledAt ||
-      (step.queueSchedulingClaimUntil && step.queueSchedulingClaimUntil > now)
-    ) {
-      return false;
-    }
-
-    this.steps.set(id, { ...step, queueSchedulingClaimUntil: claimUntil });
-    return true;
-  }
-
-  async markDueStepScheduled(id: string, scheduledAt: Date) {
-    const step = await this.getStep(id);
-    if (step.status !== "due") return;
-    this.steps.set(id, {
-      ...step,
-      queueJobScheduledAt: scheduledAt,
-      queueSchedulingClaimUntil: null,
-    });
-  }
-
-  async releaseDueStepSchedulingClaim(id: string, claimUntil: Date) {
-    const step = await this.getStep(id);
-    if (
-      step.status !== "due" ||
-      step.queueJobScheduledAt ||
-      step.queueSchedulingClaimUntil?.getTime() !== claimUntil.getTime()
-    ) {
-      return;
-    }
-    this.steps.set(id, { ...step, queueSchedulingClaimUntil: null });
-  }
-
   async updateRunStatus(id: string, status: WorkflowRunStatus, summary?: string) {
     const run = await this.getRun(id);
     this.runs.set(id, { ...run, status, summary: summary ?? run.summary });
@@ -127,24 +79,13 @@ export class TestWorkflowStore implements WorkflowStore {
   async transitionClaimedStepAfterFailure(id: string, attemptCount: number, status: "due" | "failed") {
     const step = await this.getStep(id);
     if (step.status !== "running" || step.attemptCount !== attemptCount) return false;
-    this.steps.set(id, {
-      ...step,
-      status,
-      queueJobScheduledAt: null,
-      queueSchedulingClaimUntil: null,
-    });
+    this.steps.set(id, { ...step, status });
     return true;
   }
 
   async rescheduleStep(id: string, dueAt: Date) {
     const step = await this.getStep(id);
-    this.steps.set(id, {
-      ...step,
-      status: "due",
-      dueAt,
-      queueJobScheduledAt: null,
-      queueSchedulingClaimUntil: null,
-    });
+    this.steps.set(id, { ...step, status: "due", dueAt });
   }
 
   async createStep(input: { workflowRunId: string; stepType: string; label: string; dueAt: Date; payload?: Record<string, unknown> }) {
@@ -157,8 +98,6 @@ export class TestWorkflowStore implements WorkflowStore {
       dueAt: input.dueAt,
       attemptCount: 0,
       payload: input.payload ?? {},
-      queueJobScheduledAt: null,
-      queueSchedulingClaimUntil: null,
     };
     this.steps.set(step.id, step);
     return step;

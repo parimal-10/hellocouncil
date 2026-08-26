@@ -122,7 +122,6 @@ describe("workflow step execution transitions", () => {
     store.steps.set("step-1", {
       ...store.steps.get("step-1")!,
       status: "waiting_for_human",
-      queueJobScheduledAt: new Date("2026-08-23T00:00:00.000Z"),
     });
     store.runs.set("run-1", { ...store.runs.get("run-1")!, status: "waiting_for_human" });
     store.reviews.push({

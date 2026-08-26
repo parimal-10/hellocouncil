@@ -44,16 +44,23 @@ export const caseParticipants = pgTable("case_participants", {
   role: text("role").notNull(),
 });
 
-export const workflowRuns = pgTable("workflow_runs", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  definitionId: text("definition_id").notNull(),
-  caseId: uuid("case_id").notNull().references(() => cases.id),
-  status: text("status").notNull(),
-  title: text("title").notNull(),
-  summary: text("summary").notNull().default(""),
-  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const workflowRuns = pgTable(
+  "workflow_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    definitionId: text("definition_id").notNull(),
+    caseId: uuid("case_id").notNull().references(() => cases.id),
+    status: text("status").notNull(),
+    title: text("title").notNull(),
+    summary: text("summary").notNull().default(""),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    temporalWorkflowId: text("temporal_workflow_id"),
+  },
+  (table) => ({
+    temporalIdIdx: index("workflow_runs_temporal_workflow_id_idx").on(table.temporalWorkflowId),
+  }),
+);
 
 export const workflowSteps = pgTable(
   "workflow_steps",
@@ -66,8 +73,6 @@ export const workflowSteps = pgTable(
     dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
     attemptCount: integer("attempt_count").notNull().default(0),
     payload: jsonb("payload").notNull().default({}),
-    queueJobScheduledAt: timestamp("queue_job_scheduled_at", { withTimezone: true }),
-    queueSchedulingClaimUntil: timestamp("queue_scheduling_claim_until", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

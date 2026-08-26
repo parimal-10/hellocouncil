@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import { db, type DbClient } from "@/db/client";
 import {
   contactAttempts,
@@ -28,8 +28,6 @@ export type WorkflowStepRecord = {
   dueAt: Date;
   attemptCount: number;
   payload: unknown;
-  queueJobScheduledAt?: Date | null;
-  queueSchedulingClaimUntil?: Date | null;
 };
 
 export type AppendWorkflowEventInput = {
@@ -57,15 +55,11 @@ export type ReviewRequestRecord = {
 
 export type WorkflowStore = {
   getRun(id: string): Promise<WorkflowRunRecord>;
-  getDueSteps(now: Date): Promise<WorkflowStepRecord[]>;
   listSteps(workflowRunId: string): Promise<WorkflowStepRecord[]>;
   getStep(id: string): Promise<WorkflowStepRecord>;
   getReview(id: string): Promise<ReviewRequestRecord>;
   isAssignableFirmUser(id: string): Promise<boolean>;
   claimDueStep(id: string, now: Date): Promise<WorkflowStepRecord | null>;
-  claimDueStepForScheduling(id: string, now: Date, claimUntil: Date): Promise<boolean>;
-  markDueStepScheduled(id: string, scheduledAt: Date): Promise<void>;
-  releaseDueStepSchedulingClaim(id: string, claimUntil: Date): Promise<void>;
   updateRunStatus(id: string, status: WorkflowRunStatus, summary?: string): Promise<void>;
   updateStepStatus(id: string, status: WorkflowStepStatus, attemptCount?: number): Promise<void>;
   updateStepPayload(id: string, patch: Record<string, unknown>): Promise<void>;
@@ -90,22 +84,6 @@ export class DrizzleWorkflowStore implements WorkflowStore {
     const [run] = await this.client.select().from(workflowRuns).where(eq(workflowRuns.id, id));
     if (!run) throw new Error(`Workflow run not found: ${id}`);
     return run as WorkflowRunRecord;
-  }
-
-  async getDueSteps(now: Date): Promise<WorkflowStepRecord[]> {
-    const rows = await this.client
-      .select()
-      .from(workflowSteps)
-      .where(
-        and(
-          eq(workflowSteps.status, "due"),
-          lte(workflowSteps.dueAt, now),
-          isNull(workflowSteps.queueJobScheduledAt),
-          or(isNull(workflowSteps.queueSchedulingClaimUntil), lte(workflowSteps.queueSchedulingClaimUntil, now)),
-        ),
-      )
-      .orderBy(asc(workflowSteps.dueAt));
-    return rows as WorkflowStepRecord[];
   }
 
   async listSteps(workflowRunId: string): Promise<WorkflowStepRecord[]> {
@@ -150,48 +128,6 @@ export class DrizzleWorkflowStore implements WorkflowStore {
     return (step as WorkflowStepRecord | undefined) ?? null;
   }
 
-  async claimDueStepForScheduling(id: string, now: Date, claimUntil: Date): Promise<boolean> {
-    const [step] = await this.client
-      .update(workflowSteps)
-      .set({ queueSchedulingClaimUntil: claimUntil, updatedAt: new Date() })
-      .where(
-        and(
-          eq(workflowSteps.id, id),
-          eq(workflowSteps.status, "due"),
-          lte(workflowSteps.dueAt, now),
-          isNull(workflowSteps.queueJobScheduledAt),
-          or(isNull(workflowSteps.queueSchedulingClaimUntil), lte(workflowSteps.queueSchedulingClaimUntil, now)),
-        ),
-      )
-      .returning({ id: workflowSteps.id });
-    return Boolean(step);
-  }
-
-  async markDueStepScheduled(id: string, scheduledAt: Date): Promise<void> {
-    await this.client
-      .update(workflowSteps)
-      .set({
-        queueJobScheduledAt: scheduledAt,
-        queueSchedulingClaimUntil: null,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(workflowSteps.id, id), eq(workflowSteps.status, "due")));
-  }
-
-  async releaseDueStepSchedulingClaim(id: string, claimUntil: Date): Promise<void> {
-    await this.client
-      .update(workflowSteps)
-      .set({ queueSchedulingClaimUntil: null, updatedAt: new Date() })
-      .where(
-        and(
-          eq(workflowSteps.id, id),
-          eq(workflowSteps.status, "due"),
-          isNull(workflowSteps.queueJobScheduledAt),
-          eq(workflowSteps.queueSchedulingClaimUntil, claimUntil),
-        ),
-      );
-  }
-
   async updateRunStatus(id: string, status: WorkflowRunStatus, summary?: string): Promise<void> {
     await this.client
       .update(workflowRuns)
@@ -221,8 +157,6 @@ export class DrizzleWorkflowStore implements WorkflowStore {
       .update(workflowSteps)
       .set({
         status,
-        queueJobScheduledAt: null,
-        queueSchedulingClaimUntil: null,
         updatedAt: new Date(),
       })
       .where(
@@ -242,8 +176,6 @@ export class DrizzleWorkflowStore implements WorkflowStore {
       .set({
         status: "due",
         dueAt,
-        queueJobScheduledAt: null,
-        queueSchedulingClaimUntil: null,
         updatedAt: new Date(),
       })
       .where(eq(workflowSteps.id, id));

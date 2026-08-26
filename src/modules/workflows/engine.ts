@@ -1,12 +1,8 @@
 import type { FollowUpDecision } from "@/modules/phone/follow-up-policy";
 import { advanceDueStep as advanceDueStepExternal, type ExecuteStepOutcome } from "./execution";
-import { blockStep, errorMessage, isPayload, serializeDecision } from "./transitions";
+import { blockStep, isPayload, serializeDecision } from "./transitions";
 import type { WorkflowRunRecord, WorkflowStepRecord, WorkflowStore } from "./store";
 import type { ReviewDecision, WorkflowAction, WorkflowDefinition } from "./types";
-
-export type WorkflowStepScheduler = {
-  scheduleDueStep(input: { stepId: string; runAt: Date }): Promise<string>;
-};
 
 export type OutboundFollowUpPort = {
   evaluateWindow(input: { workflowRunId: string; now: Date }): Promise<{ timeZone: string }>;
@@ -20,7 +16,6 @@ export class WorkflowEngine {
     private readonly input: {
       store: WorkflowStore;
       definitions: readonly WorkflowDefinition[];
-      scheduler?: WorkflowStepScheduler;
       outboundCaller?: OutboundFollowUpPort;
     },
   ) {
@@ -167,16 +162,6 @@ export class WorkflowEngine {
       dueAt: action.dueAt,
       payload: { reason: action.reason, requestedByUser: true },
     });
-    let schedulerError: unknown;
-    if (this.input.scheduler) {
-      try {
-        const jobId = await this.input.scheduler.scheduleDueStep({ stepId: step.id, runAt: action.dueAt });
-        if (!jobId) throw new Error("Due-step scheduler did not return a job id.");
-        await this.input.store.markDueStepScheduled(step.id, new Date());
-      } catch (error) {
-        schedulerError = error;
-      }
-    }
     await this.input.store.appendEvent({
       workflowRunId: run.id,
       type: "step.scheduled",
@@ -184,10 +169,6 @@ export class WorkflowEngine {
       actorType: "voice_agent",
       payload: { stepId: step.id, stepType: action.stepType, dueAt: action.dueAt.toISOString() },
     });
-    if (schedulerError) {
-      await this.markScheduleFailed(run.id, step.id, schedulerError);
-      return { ok: true, message: "Follow-up created; queue scheduling will be retried." };
-    }
     return { ok: true, message: "Follow-up scheduled." };
   }
 
@@ -326,9 +307,6 @@ export class WorkflowEngine {
       if (step) {
         await this.input.store.updateStepPayload(step.id, this.decisionPayload(input));
         await this.input.store.rescheduleStep(step.id, input.decision.dueAt);
-        if (input.decision.action === "retry") {
-          await this.enqueueIfPresent(step.id, input.decision.dueAt, input.now, run.id);
-        }
       } else {
         await this.createFollowUpStep({
           runId: run.id,
@@ -396,7 +374,6 @@ export class WorkflowEngine {
       dueAt: input.dueAt,
       payload: input.payload,
     });
-    await this.enqueueIfPresent(scheduledStep.id, input.dueAt, input.now, input.runId);
     await this.input.store.appendEvent({
       workflowRunId: input.runId,
       type: "step.scheduled",
@@ -404,17 +381,6 @@ export class WorkflowEngine {
       actorType: "worker",
       payload: { stepId: scheduledStep.id, stepType: template.type, dueAt: input.dueAt.toISOString() },
     });
-  }
-
-  private async enqueueIfPresent(stepId: string, dueAt: Date, now: Date, workflowRunId: string) {
-    if (!this.input.scheduler) return;
-    try {
-      const jobId = await this.input.scheduler.scheduleDueStep({ stepId, runAt: dueAt });
-      if (!jobId) throw new Error("Due-step scheduler did not return a job id.");
-      await this.input.store.markDueStepScheduled(stepId, now);
-    } catch (error) {
-      await this.markScheduleFailed(workflowRunId, stepId, error);
-    }
   }
 
   private async logSchedulingDecision(input: {
@@ -465,18 +431,6 @@ export class WorkflowEngine {
     if (source === "worker") return "worker" as const;
     if (source === "reviewer") return "reviewer" as const;
     return "voice_agent" as const;
-  }
-
-  private async markScheduleFailed(workflowRunId: string, workflowStepId: string, error: unknown) {
-    const message = errorMessage(error);
-    const summary = "Workflow step scheduling will be retried.";
-    await this.input.store.appendEvent({
-      workflowRunId,
-      type: "step.schedule_failed",
-      summary,
-      actorType: "worker",
-      payload: { stepId: workflowStepId, error: message },
-    });
   }
 
   private payloadNumber(payload: unknown, key: string) {

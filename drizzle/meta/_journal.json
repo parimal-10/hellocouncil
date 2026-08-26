@@ -50,6 +50,13 @@
       "when": 1787664000000,
       "tag": "0006_drop_synthetic_responses",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787736201279,
+      "tag": "0007_flippant_eternals",
+      "breakpoints": true
     }
   ]
 }
