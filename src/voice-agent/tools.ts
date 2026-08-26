@@ -173,6 +173,14 @@ export async function executeVoiceWorkflowTool(input: {
       }
 
       const definition = getWorkflowDefinition(run.definitionId);
+      if (
+        action.type === "schedule_follow_up"
+        && !definition.allowedActions.includes("schedule_follow_up")
+      ) {
+        throw new VoiceToolPublicError(
+          `Action schedule_follow_up is not allowed for workflow ${definition.id}.`,
+        );
+      }
       const resolvedAction = action.type === "schedule_follow_up"
         ? resolveScheduleFollowUp(action, definition, input.payload, input.now ?? new Date())
         : action;

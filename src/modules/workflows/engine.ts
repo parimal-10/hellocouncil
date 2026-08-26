@@ -15,7 +15,6 @@ export class WorkflowEngine {
     private readonly input: {
       store: WorkflowStore;
       definitions: readonly WorkflowDefinition[];
-      outboundCaller?: OutboundFollowUpPort;
     },
   ) {
     this.definitionsById = new Map(input.definitions.map((definition) => [definition.id, definition]));

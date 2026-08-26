@@ -379,6 +379,42 @@ describe("voice agent tools", () => {
     expect(signals).toEqual([]);
   });
 
+  it("rejects schedule_follow_up when the workflow definition does not allow it", async () => {
+    const store = storeWithRun();
+    const definitions = await import("@/modules/workflows/definitions");
+    const realDefinition = definitions.getWorkflowDefinition("medical-records-follow-up");
+    const getDefinitionSpy = vi
+      .spyOn(definitions, "getWorkflowDefinition")
+      .mockReturnValue({
+        ...realDefinition,
+        allowedActions: realDefinition.allowedActions.filter((action) => action !== "schedule_follow_up"),
+      });
+    const signals: Array<{ workflowRunId: string; signal: string; args: unknown[] }> = [];
+
+    try {
+      await expect(
+        executeVoiceWorkflowTool({
+          workflowRunId: "run-1",
+          toolName: "schedule_follow_up",
+          payload: {
+            stepType: "provider_follow_up",
+            dueAt: "2026-08-24T10:00:00.000Z",
+            reason: "Call again.",
+          },
+          store,
+          signalRunImpl: async (options) => {
+            signals.push(options);
+          },
+        }),
+      ).rejects.toThrow("Action schedule_follow_up is not allowed for workflow medical-records-follow-up.");
+    } finally {
+      getDefinitionSpy.mockRestore();
+    }
+
+    expect(store.steps.size).toBe(0);
+    expect(signals).toEqual([]);
+  });
+
   it("routes add_review_note only when the review belongs to the active run", async () => {
     const store = storeWithRun();
     addOpenReview(store);
