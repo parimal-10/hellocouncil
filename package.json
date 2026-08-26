@@ -21,6 +21,10 @@
     "@livekit/agents-plugin-silero": "^1.7.0",
     "@livekit/components-react": "^2.9.24",
     "@livekit/components-styles": "^1.2.0",
+    "@temporalio/client": "^1.23.0",
+    "@temporalio/common": "^1.23.0",
+    "@temporalio/worker": "^1.23.0",
+    "@temporalio/workflow": "^1.23.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "dotenv": "^17.4.2",
@@ -40,6 +44,7 @@
   },
   "devDependencies": {
     "@next/eslint-plugin-next": "^15.5.23",
+    "@temporalio/testing": "^1.23.0",
     "@testing-library/jest-dom": "^6.6.0",
     "@testing-library/react": "^16.1.0",
     "@types/luxon": "^3.7.5",
