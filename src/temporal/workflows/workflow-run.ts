@@ -25,7 +25,6 @@ export async function workflowRunWorkflow(input: WorkflowRunInput): Promise<void
   const { workflowRunId } = input;
 
   const completedCallIds: string[] = [];
-  const appliedCallIds = new Set<string>();
   let reviewPending = false;
   let runNowPending = false;
   let schedulePending = false;
@@ -52,21 +51,45 @@ export async function workflowRunWorkflow(input: WorkflowRunInput): Promise<void
     completedCallIds.length > 0 || reviewPending || runNowPending || schedulePending;
 
   while (true) {
+    const pendingBeforeLoad =
+      completedCallIds.length > 0 || reviewPending || runNowPending || schedulePending;
     const state = await loadRunState({ workflowRunId });
 
     if (state.runStatus === "completed" || state.runStatus === "failed" || state.runStatus === "cancelled") {
       return;
     }
 
-    // Every wake leads to a state reload here, so consumed notifications must
-    // not keep waking the loop: a replayed callCompleted (the webhook is
-    // at-least-once) or an already-applied schedule request would otherwise
-    // spin the workflow hot.
-    if (!state.awaitingCallCompletion) {
-      for (let i = completedCallIds.length - 1; i >= 0; i -= 1) {
-        if (appliedCallIds.has(completedCallIds[i])) completedCallIds.splice(i, 1);
-      }
+    // Handlers only run between awaits, so a flag that appears while the load
+    // above is in flight arrived after the snapshot. Its app-side effect is
+    // already persisted (signals are sent after persist), but this iteration
+    // captured pre-signal state; reload once so the wake is not cleared below.
+    if (
+      !pendingBeforeLoad
+      && (completedCallIds.length > 0 || reviewPending || runNowPending || schedulePending)
+    ) {
+      continue;
     }
+
+    // Consumed notifications must not keep waking the loop: runNow/schedule
+    // exist only to trigger the reload at the top of the iteration and are
+    // cleared once the fresh state is in hand. A review resolution without an
+    // open review is already reflected in that state. Call-completion signals
+    // are at-least-once (Twilio webhooks retry) and can arrive outside the
+    // awaiting window entirely; each queued entry is resolved through the
+    // idempotent orchestration claim ({applied:false} unless applicable) and
+    // removed regardless of outcome, so a stray signal can never spin the
+    // idle loop hot.
+    if (!state.awaitingCallCompletion && completedCallIds.length > 0) {
+      const queuedCallIds = completedCallIds.splice(0, completedCallIds.length);
+      for (const callId of queuedCallIds) {
+        lastWake = `outcome:${callId}`;
+        await applyCallOutcome({ callId });
+      }
+      // The applied outcomes may have changed app-side state (scheduled steps,
+      // run status); reload before deciding what to wait on.
+      continue;
+    }
+    if (!state.openReviewId) reviewPending = false;
     runNowPending = false;
     schedulePending = false;
 
@@ -75,7 +98,6 @@ export async function workflowRunWorkflow(input: WorkflowRunInput): Promise<void
       const callId = completedCallIds.shift();
       if (callId !== undefined) {
         lastWake = `outcome:${callId}`;
-        appliedCallIds.add(callId);
         await applyCallOutcome({ callId });
       }
       continue;
@@ -106,8 +128,5 @@ export async function workflowRunWorkflow(input: WorkflowRunInput): Promise<void
       const wokeBySignal = await condition(anyPendingSignal, dueInMs);
       if (!wokeBySignal) lastWake = "timer_elapsed";
     }
-    // Flags are intentionally not reset here: runNow/schedule simply trigger a
-    // state reload (their effects were already persisted app-side before the
-    // signal), and reviewPending/calls are consumed at their own branches.
   }
 }
