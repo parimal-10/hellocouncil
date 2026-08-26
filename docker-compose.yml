@@ -44,7 +44,12 @@ services:
     depends_on:
       - temporal
     restart: "no"
-    entrypoint: ["sh", "-c", "temporal operator namespace create --address temporal:7233 hellocouncil || true"]
+    entrypoint:
+      [
+        "sh",
+        "-c",
+        "for i in $$(seq 1 30); do out=$$(temporal operator namespace create --address temporal:7233 hellocouncil 2>&1); rc=$$?; echo \"$$out\"; [ $$rc -eq 0 ] && exit 0; case \"$$out\" in *'already exists'*) exit 0;; esac; sleep 2; done; echo 'namespace init failed'; exit 1",
+      ]
 
 volumes:
   hellocouncil-postgres:
