@@ -21,29 +21,34 @@ const { loadRunState, executeDueStep, applyCallOutcome } = proxyActivities<typeo
   },
 });
 
-type WakeReason = "call_completed" | "review_resolved" | "run_now" | "scheduled" | null;
-
 export async function workflowRunWorkflow(input: WorkflowRunInput): Promise<void> {
   const { workflowRunId } = input;
 
-  let wake: WakeReason = null;
   const completedCallIds: string[] = [];
+  let reviewPending = false;
+  let runNowPending = false;
+  let schedulePending = false;
   let lastWake: string | null = null;
 
+  // Each handler only records its own pending state; nothing is shared or
+  // cross-cleared, so a signal delivered while the workflow waits on another
+  // branch can never be lost.
   setHandler(workflowSignals.callCompleted, (payload) => {
     completedCallIds.push(payload.callId);
-    wake = "call_completed";
   });
   setHandler(workflowSignals.reviewResolved, () => {
-    wake = "review_resolved";
+    reviewPending = true;
   });
   setHandler(workflowSignals.runFollowUpNow, () => {
-    wake = "run_now";
+    runNowPending = true;
   });
   setHandler(workflowSignals.scheduleFollowUp, () => {
-    wake = "scheduled";
+    schedulePending = true;
   });
   setHandler(runStateQuery, () => ({ lastWake }));
+
+  const anyPendingSignal = () =>
+    completedCallIds.length > 0 || reviewPending || runNowPending || schedulePending;
 
   while (true) {
     const state = await loadRunState({ workflowRunId });
@@ -53,17 +58,18 @@ export async function workflowRunWorkflow(input: WorkflowRunInput): Promise<void
     }
 
     if (state.awaitingCallCompletion) {
-      await condition(() => wake === "call_completed");
-      const callId = completedCallIds.shift()!;
-      wake = null;
-      lastWake = `outcome:${callId}`;
-      await applyCallOutcome({ callId });
+      await condition(() => completedCallIds.length > 0);
+      const callId = completedCallIds.shift();
+      if (callId !== undefined) {
+        lastWake = `outcome:${callId}`;
+        await applyCallOutcome({ callId });
+      }
       continue;
     }
 
     if (state.openReviewId) {
-      await condition(() => wake === "review_resolved");
-      wake = null;
+      await condition(() => reviewPending);
+      reviewPending = false;
       lastWake = "review_resolved";
       continue; // reviewer wrote projections app-side; loop reloads state
     }
@@ -74,19 +80,20 @@ export async function workflowRunWorkflow(input: WorkflowRunInput): Promise<void
       if (outcome.kind === "noop") {
         // avoid a hot loop if another actor claimed the step; retry on next
         // wake or after a short delay
-        await condition(() => wake !== null, 60_000);
-        wake = null;
+        await condition(anyPendingSignal, 60_000);
       }
       continue; // placed → awaiting; deferred → new dueAt; blocked → openReviewId
     }
 
     const dueInMs = state.nextDueAt === null ? null : Math.max(0, state.nextDueAt - Date.now());
     if (dueInMs === null) {
-      await condition(() => wake !== null);
+      await condition(anyPendingSignal);
     } else {
-      const wokeBySignal = await condition(() => wake !== null, dueInMs);
+      const wokeBySignal = await condition(anyPendingSignal, dueInMs);
       if (!wokeBySignal) lastWake = "timer_elapsed";
     }
-    wake = null; // run_now/scheduled wakes simply trigger a state reload
+    // Flags are intentionally not reset here: runNow/schedule simply trigger a
+    // state reload (their effects were already persisted app-side before the
+    // signal), and reviewPending/calls are consumed at their own branches.
   }
 }

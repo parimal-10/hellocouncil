@@ -157,4 +157,135 @@ describe("workflowRunWorkflow", () => {
 
     expect(log).toEqual(["load", "load", "execute:step-1", "load"]);
   }, 30000);
+
+  it("processes a call outcome that arrives after an intervening scheduleFollowUp signal", async () => {
+    const log: string[] = [];
+    const state: FakeState = { dueStepId: "step-1", awaiting: false, runStatus: "active" };
+    const client = env.client.workflow;
+
+    const handle = await client.start(workflowRunWorkflow, {
+      args: [{ workflowRunId: "run-interleaved" }],
+      workflowId: "workflow-run-test-3",
+      taskQueue: TASK_QUEUE,
+    });
+
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      taskQueue: TASK_QUEUE,
+      workflowsPath: workflowsPath(),
+      activities: fakeActivities(log, state),
+    });
+    const workerPromise = worker.run();
+    await env.sleep("50ms"); // let the workflow block awaiting callCompleted
+    await handle.signal(workflowSignals.scheduleFollowUp, {
+      stepType: "reminder",
+      dueAt: new Date(Date.now() + 60_000).toISOString(),
+      reason: "interleaved",
+    });
+    await handle.signal(workflowSignals.callCompleted, { callId: "call-1" });
+    await handle.result();
+    worker.shutdown();
+    await workerPromise;
+
+    expect(log).toEqual(["load", "execute:step-1", "load", "outcome:call-1", "load"]);
+  }, 30000);
+
+  it("applies outcomes for two back-to-back placed calls whose completions arrive together", async () => {
+    const log: string[] = [];
+    const outcomeCallIds: string[] = [];
+    const state = { step: 0, awaiting: false };
+    const fake = {
+      async loadRunState(_input: { workflowRunId: string }) {
+        log.push("load");
+        if (!state.awaiting && state.step < 2) {
+          return {
+            runStatus: "active",
+            awaitingCallCompletion: false,
+            openReviewId: null,
+            dueStepId: `step-${state.step + 1}`,
+            nextDueAt: null,
+          };
+        }
+        if (state.awaiting) {
+          return {
+            runStatus: "active",
+            awaitingCallCompletion: true,
+            openReviewId: null,
+            dueStepId: null,
+            nextDueAt: null,
+          };
+        }
+        return {
+          runStatus: "completed",
+          awaitingCallCompletion: false,
+          openReviewId: null,
+          dueStepId: null,
+          nextDueAt: null,
+        };
+      },
+      async executeDueStep(input: { stepId: string }) {
+        log.push(`execute:${input.stepId}`);
+        state.step += 1;
+        state.awaiting = true;
+        return { kind: "placed" };
+      },
+      async applyCallOutcome(input: { callId: string }) {
+        log.push(`outcome:${input.callId}`);
+        outcomeCallIds.push(input.callId);
+        state.awaiting = false;
+        return { applied: true };
+      },
+      async recordTemporalWorkflowId(_input: { workflowRunId: string; temporalWorkflowId: string }) {},
+    } as unknown as typeof activities;
+
+    const client = env.client.workflow;
+    const handle = await client.start(workflowRunWorkflow, {
+      args: [{ workflowRunId: "run-multi-call" }],
+      workflowId: "workflow-run-test-4",
+      taskQueue: TASK_QUEUE,
+    });
+
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      taskQueue: TASK_QUEUE,
+      workflowsPath: workflowsPath(),
+      activities: fake,
+    });
+    const workerPromise = worker.run();
+    await env.sleep("50ms"); // let the workflow block awaiting the first call
+    await handle.signal(workflowSignals.callCompleted, { callId: "call-2" });
+    await handle.signal(workflowSignals.callCompleted, { callId: "call-1" });
+    await handle.result();
+    worker.shutdown();
+    await workerPromise;
+
+    expect([...outcomeCallIds].sort()).toEqual(["call-1", "call-2"]);
+    expect(log.filter((entry) => entry.startsWith("execute:"))).toEqual(["execute:step-1", "execute:step-2"]);
+    expect(log[0]).toBe("load");
+  }, 30000);
+
+  it("returns immediately when the run is already in a terminal status", async () => {
+    const log: string[] = [];
+    const state: FakeState = { dueStepId: null, awaiting: false, runStatus: "cancelled" };
+    const client = env.client.workflow;
+
+    const handle = await client.start(workflowRunWorkflow, {
+      args: [{ workflowRunId: "run-terminal" }],
+      workflowId: "workflow-run-test-5",
+      taskQueue: TASK_QUEUE,
+    });
+
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      taskQueue: TASK_QUEUE,
+      workflowsPath: workflowsPath(),
+      activities: fakeActivities(log, state),
+    });
+    const workerPromise = worker.run();
+    await handle.result();
+    worker.shutdown();
+    await workerPromise;
+
+    expect(log).toEqual(["load"]);
+  }, 30000);
 });
