@@ -12,7 +12,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx src/db/seed.ts",
-    "worker": "tsx src/worker/start.ts",
+    "worker": "tsx src/temporal/worker.ts",
     "voice:agent": "tsx src/voice-agent/start.ts start",
     "voice:agent:dev": "tsx src/voice-agent/start.ts dev"
   },
