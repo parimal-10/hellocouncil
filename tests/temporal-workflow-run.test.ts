@@ -264,6 +264,115 @@ describe("workflowRunWorkflow", () => {
     expect(log[0]).toBe("load");
   }, 30000);
 
+  it("treats a duplicate callCompleted signal as a no-op instead of spinning", async () => {
+    const log: string[] = [];
+    const outcomeCalls: string[] = [];
+    const fake = {
+      async loadRunState(_input: { workflowRunId: string }) {
+        log.push("load");
+        return {
+          runStatus: "active",
+          awaitingCallCompletion: state.awaiting,
+          openReviewId: null,
+          dueStepId: null,
+          nextDueAt: null,
+        };
+      },
+      async executeDueStep(_input: { stepId: string }) {
+        throw new Error("not expected");
+      },
+      async applyCallOutcome(input: { callId: string }) {
+        log.push(`outcome:${input.callId}`);
+        outcomeCalls.push(input.callId);
+        state.awaiting = false;
+        return { applied: true };
+      },
+      async recordTemporalWorkflowId(_input: { workflowRunId: string; temporalWorkflowId: string }) {},
+    } as unknown as typeof activities;
+    const state = { awaiting: true };
+
+    const client = env.client.workflow;
+    const handle = await client.start(workflowRunWorkflow, {
+      args: [{ workflowRunId: "run-duplicate" }],
+      workflowId: "workflow-run-test-6",
+      taskQueue: TASK_QUEUE,
+    });
+
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      taskQueue: TASK_QUEUE,
+      workflowsPath: workflowsPath(),
+      activities: fake,
+    });
+    const workerPromise = worker.run();
+    await env.sleep("50ms"); // let the workflow block awaiting callCompleted
+    await handle.signal(workflowSignals.callCompleted, { callId: "call-1" });
+    await env.sleep("100ms"); // let the first outcome be applied
+    await handle.signal(workflowSignals.callCompleted, { callId: "call-1" });
+    await env.sleep("500ms"); // the replayed signal must be dropped, not spun on
+
+    const loadsAfterSettle = log.filter((entry) => entry === "load").length;
+    await env.sleep("300ms");
+    expect(log.filter((entry) => entry === "load").length).toBeLessThanOrEqual(loadsAfterSettle + 2);
+    expect(outcomeCalls).toEqual(["call-1"]);
+    await handle.cancel();
+    worker.shutdown();
+    await workerPromise;
+  }, 30000);
+
+  it("does not hot-loop after consuming a scheduleFollowUp signal", async () => {
+    const log: string[] = [];
+    const fake = {
+      async loadRunState(_input: { workflowRunId: string }) {
+        log.push("load");
+        return {
+          runStatus: "active",
+          awaitingCallCompletion: false,
+          openReviewId: null,
+          dueStepId: null,
+          nextDueAt: null,
+        };
+      },
+      async executeDueStep(_input: { stepId: string }) {
+        throw new Error("not expected");
+      },
+      async applyCallOutcome(_input: { callId: string }) {
+        throw new Error("not expected");
+      },
+      async recordTemporalWorkflowId(_input: { workflowRunId: string; temporalWorkflowId: string }) {},
+    } as unknown as typeof activities;
+
+    const client = env.client.workflow;
+    const handle = await client.start(workflowRunWorkflow, {
+      args: [{ workflowRunId: "run-schedule-idle" }],
+      workflowId: "workflow-run-test-7",
+      taskQueue: TASK_QUEUE,
+    });
+
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      taskQueue: TASK_QUEUE,
+      workflowsPath: workflowsPath(),
+      activities: fake,
+    });
+    const workerPromise = worker.run();
+    await env.sleep("50ms"); // let the workflow block on the idle wait
+    await handle.signal(workflowSignals.scheduleFollowUp, {
+      stepType: "client_check_in",
+      dueAt: new Date(Date.now() + 60_000).toISOString(),
+      reason: "idle",
+    });
+    await env.sleep("500ms"); // the consumed signal must not keep waking the loop
+
+    const loadsAfterSettle = log.filter((entry) => entry === "load").length;
+    await env.sleep("300ms");
+    expect(log.filter((entry) => entry === "load").length).toBeLessThanOrEqual(loadsAfterSettle + 2);
+    expect(loadsAfterSettle).toBeLessThan(10);
+    await handle.cancel();
+    worker.shutdown();
+    await workerPromise;
+  }, 30000);
+
   it("returns immediately when the run is already in a terminal status", async () => {
     const log: string[] = [];
     const state: FakeState = { dueStepId: null, awaiting: false, runStatus: "cancelled" };

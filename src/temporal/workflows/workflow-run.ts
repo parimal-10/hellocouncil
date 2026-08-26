@@ -25,6 +25,7 @@ export async function workflowRunWorkflow(input: WorkflowRunInput): Promise<void
   const { workflowRunId } = input;
 
   const completedCallIds: string[] = [];
+  const appliedCallIds = new Set<string>();
   let reviewPending = false;
   let runNowPending = false;
   let schedulePending = false;
@@ -57,11 +58,24 @@ export async function workflowRunWorkflow(input: WorkflowRunInput): Promise<void
       return;
     }
 
+    // Every wake leads to a state reload here, so consumed notifications must
+    // not keep waking the loop: a replayed callCompleted (the webhook is
+    // at-least-once) or an already-applied schedule request would otherwise
+    // spin the workflow hot.
+    if (!state.awaitingCallCompletion) {
+      for (let i = completedCallIds.length - 1; i >= 0; i -= 1) {
+        if (appliedCallIds.has(completedCallIds[i])) completedCallIds.splice(i, 1);
+      }
+    }
+    runNowPending = false;
+    schedulePending = false;
+
     if (state.awaitingCallCompletion) {
       await condition(() => completedCallIds.length > 0);
       const callId = completedCallIds.shift();
       if (callId !== undefined) {
         lastWake = `outcome:${callId}`;
+        appliedCallIds.add(callId);
         await applyCallOutcome({ callId });
       }
       continue;
