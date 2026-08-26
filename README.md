@@ -8,20 +8,29 @@ A working slice of a reusable platform for long-running legal-agent workflows. I
 - TypeScript
 - Postgres
 - Drizzle
-- pg-boss
+- Temporal (self-hosted)
 - Vitest
 
 ## Local Setup
 
+Prerequisite: Docker (for Postgres and the Temporal server).
+
 ```powershell
 npm install
 Copy-Item .env.example .env
-docker compose up -d postgres
+docker compose up -d
 npm run db:generate
 npm run db:migrate
 npm run db:seed
 npm run dev
 ```
+
+`docker compose up -d` starts four services:
+
+- `postgres` — application and Temporal persistence (`localhost:5432`)
+- `temporal` — Temporal server (`temporalio/auto-setup`, `localhost:7233`)
+- `temporal-ui` — Temporal Web UI at `http://localhost:8080`
+- `temporal-namespace-init` — one-shot job that creates the `hellocouncil` namespace (retries until the server is ready)
 
 Open `http://localhost:3000`.
 
@@ -33,7 +42,20 @@ Run the worker in a separate terminal:
 npm run worker
 ```
 
-The worker requires the application environment to be configured and the Postgres database to be running. Set `AUTO_OUTBOUND_CALLS=true` (with the `TWILIO_*` variables and `PUBLIC_BASE_URL`) so due follow-up steps place real Twilio calls; there is no simulated fallback, and the worker refuses to start without it.
+The worker (`src/temporal/worker.ts`) connects to the Temporal server at `TEMPORAL_ADDRESS` (default `localhost:7233`) in namespace `TEMPORAL_NAMESPACE` (default `hellocouncil`) and polls the task queue `hellocouncil-workflows`.
+
+The worker requires the application environment to be configured and both Postgres and the Temporal server to be running. Set `AUTO_OUTBOUND_CALLS=true` (with the `TWILIO_*` variables and `PUBLIC_BASE_URL`) so due follow-up steps place real Twilio calls; there is no simulated fallback, and the worker refuses to start without it.
+
+### Workflow conventions
+
+- One Temporal workflow execution per workflow run, with workflow id `workflow-run-${workflowRunId}`.
+- Signals: `callCompleted {callId}`, `reviewResolved`, `runFollowUpNow`, `scheduleFollowUp`.
+- Query: `runState`.
+- Durable timers, retries, and recovery after restarts are owned by Temporal. Postgres holds current-state projections (runs, steps, events) for UI reads.
+
+Dev-only caveat: workflow code is not versioned. Changing workflow code can break in-flight executions — re-seed or cancel running workflows after modifying workflow logic.
+
+Note: real Twilio dialing requires a full Twilio account and a public tunnel so status webhooks can reach `PUBLIC_BASE_URL`.
 
 ## LiveKit Voice Agent
 
@@ -84,4 +106,5 @@ Open `/cases`, fill in the matter, client, and optional provider contacts, and o
 ## Design Links
 
 - [Platform design](docs/superpowers/specs/2026-08-23-long-running-agents-platform-design.md)
+- [Temporal runner migration design](docs/superpowers/specs/2026-08-26-temporal-runner-migration-design.md)
 - [Assignment note](docs/assignment-note.md)

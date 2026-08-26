@@ -89,6 +89,8 @@ Selected because the platform's core value is durable state, scheduling, and aud
 
 ### Future Orchestration Path
 
+> Superseded 2026-08-26: the DB-backed runner was migrated to self-hosted Temporal. See docs/superpowers/specs/2026-08-26-temporal-runner-migration-design.md.
+
 Decision: use the DB-backed workflow engine for this slice and document Temporal as the production migration path.
 
 Temporal was considered the strongest production-grade durable workflow engine because it provides durable execution, timers, signals, retries, event history, and resumability. It is heavier than needed for this assignment and could obscure the platform primitives behind a vendor integration. The domain model will keep workflow runs, steps, timers, review requests, and audit events explicit so a future Temporal migration can map those concepts to workflows, activities, signals, and queries.
