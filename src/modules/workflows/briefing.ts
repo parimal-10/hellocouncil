@@ -1,3 +1,4 @@
+import { formatInTimeZone } from "@/modules/time/timezone";
 import { getWorkflowDefinition } from "./definitions";
 import type { WorkflowDefinition, WorkflowDefinitionId } from "./types";
 
@@ -21,6 +22,7 @@ export type WorkflowBriefingSnapshot = {
     clientName: string;
     providerName?: string;
     assignedUserName: string;
+    timeZone?: string | null;
   };
   steps: Array<{ id: string; label: string; status: string; dueAt: Date; stepType: string }>;
   reviews: Array<{ id: string; status: string; reason: string; summary: string }>;
@@ -48,19 +50,21 @@ export function buildWorkflowBriefing(input: WorkflowBriefingSnapshot): Workflow
     nextFollowUp,
     openReviews,
     now,
+    timeZone: input.context?.timeZone,
   });
   const nextSteps = plannedNextSteps({
     runStatus: input.run.status,
     nextFollowUp,
     openReviews,
     now,
+    timeZone: input.context?.timeZone,
   });
   const spokenSummary = [
     currentStatus,
     nextFollowUp
       ? nextFollowUp.dueAt <= now
         ? `The next follow-up is ${nextFollowUp.label}, due now.`
-        : `The next follow-up is ${nextFollowUp.label}, scheduled for ${nextFollowUp.dueAt.toISOString()}.`
+        : `The next follow-up is ${nextFollowUp.label}, scheduled for ${formatBriefingDate(nextFollowUp.dueAt, input.context?.timeZone)}.`
       : "No follow-up is currently scheduled.",
     openReviews[0] ? `Open review: ${openReviews[0].reason}. ${openReviews[0].summary}` : "",
   ]
@@ -88,7 +92,7 @@ export function buildWorkflowBriefing(input: WorkflowBriefingSnapshot): Workflow
       `Latest summary: ${input.run.summary || "None"}.`,
       `Valid follow-up step types: ${input.definition.stepTemplates.map((step) => step.type).join(", ")}.`,
       nextFollowUp
-        ? `Next scheduled follow-up: ${nextFollowUp.label} (${nextFollowUp.stepType}) at ${nextFollowUp.dueAt.toISOString()}.`
+        ? `Next scheduled follow-up: ${nextFollowUp.label} (${nextFollowUp.stepType}) at ${formatBriefingDate(nextFollowUp.dueAt, input.context?.timeZone)}.`
         : "No follow-up is scheduled.",
       openReviews.length > 0
         ? `Open reviews: ${openReviews.map((review) => `${review.id} (${review.reason})`).join("; ")}.`
@@ -125,6 +129,7 @@ function statusLine(input: {
   nextFollowUp: { label: string; dueAt: Date } | null;
   openReviews: Array<{ summary: string }>;
   now: Date;
+  timeZone?: string | null;
 }) {
   if (input.run.status === "waiting_for_human") {
     return `${input.matter} is waiting for human review${input.openReviews[0] ? `: ${input.openReviews[0].summary}` : "."}`;
@@ -133,7 +138,7 @@ function statusLine(input: {
     return `${input.matter} has a ${input.nextFollowUp.label} due now. ${input.run.summary}`.trim();
   }
   if (input.nextFollowUp) {
-    return `${input.matter} is ${input.run.status}. Next follow-up: ${input.nextFollowUp.label} on ${input.nextFollowUp.dueAt.toISOString()}. ${input.run.summary}`.trim();
+    return `${input.matter} is ${input.run.status}. Next follow-up: ${input.nextFollowUp.label} on ${formatBriefingDate(input.nextFollowUp.dueAt, input.timeZone)}. ${input.run.summary}`.trim();
   }
   return `${input.matter} is ${input.run.status}. ${input.run.summary}`.trim();
 }
@@ -143,6 +148,7 @@ function plannedNextSteps(input: {
   nextFollowUp: { label: string; dueAt: Date } | null;
   openReviews: Array<{ summary: string }>;
   now: Date;
+  timeZone?: string | null;
 }) {
   const steps: string[] = [];
   if (input.openReviews[0]) {
@@ -152,7 +158,7 @@ function plannedNextSteps(input: {
     steps.push(
       input.nextFollowUp.dueAt <= input.now
         ? `${input.nextFollowUp.label} is due now and can be run immediately.`
-        : `${input.nextFollowUp.label} is scheduled for ${input.nextFollowUp.dueAt.toISOString()}.`,
+        : `${input.nextFollowUp.label} is scheduled for ${formatBriefingDate(input.nextFollowUp.dueAt, input.timeZone)}.`,
     );
   } else if (input.runStatus === "active") {
     steps.push("No follow-up is scheduled. The agent can start one now.");
@@ -160,4 +166,9 @@ function plannedNextSteps(input: {
     steps.push("No further follow-ups are planned.");
   }
   return steps;
+}
+
+function formatBriefingDate(date: Date, timeZone?: string | null): string {
+  if (timeZone) return formatInTimeZone(date, timeZone);
+  return date.toLocaleString("en-US", { dateStyle: "full", timeStyle: "short" });
 }

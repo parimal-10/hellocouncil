@@ -1,17 +1,13 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import {
-  ArrowLeft,
-  Building2,
-  ClipboardCheck,
-  History,
-  Phone,
-  PhoneOutgoing,
-  Users,
-} from "lucide-react";
+import { ArrowLeft, Building2, Phone, PhoneOutgoing, Users } from "lucide-react";
 import { MatterForm, OrganizationForm, PersonForm } from "./case-file-forms";
 import { StatusBadge, humanize } from "../ui";
 import { placeOutboundCallAction } from "../../actions/phone";
+import {
+  WorkflowDetailSections,
+  loadWorkflowDetailSectionData,
+} from "../../workflows/[id]/workflow-detail-sections";
 import { getCaseFile } from "@/modules/cases/store";
 import {
   Avatar,
@@ -19,7 +15,6 @@ import {
   CardHeader,
   EmptyState,
   PageHeader,
-  Timeline,
   btn,
   formatDateTime,
 } from "../../components/ui";
@@ -30,6 +25,9 @@ export default async function CaseFilePage({ params }: { params: Promise<{ id: s
   const { id } = await params;
   const file = await getCaseFile(id);
   if (!file) notFound();
+  const workflowActivities = (
+    await Promise.all(file.workflows.map((run) => loadWorkflowDetailSectionData(run.id)))
+  ).filter((activity): activity is NonNullable<typeof activity> => Boolean(activity));
 
   return (
     <div className="space-y-6">
@@ -127,7 +125,7 @@ export default async function CaseFilePage({ params }: { params: Promise<{ id: s
         <CardHeader
           title="Workflows"
           icon={<PhoneOutgoing size={15} />}
-          description="Run history is recorded by the worker. Place a live Twilio call from here, or open the run for transcripts."
+          description="Run history is recorded by the worker. Place a live Twilio call from here, or open the dedicated workflow page."
         />
         {file.workflows.length === 0 ? (
           <EmptyState icon={<PhoneOutgoing size={28} />}>No workflow runs are attached to this case.</EmptyState>
@@ -156,114 +154,39 @@ export default async function CaseFilePage({ params }: { params: Promise<{ id: s
         )}
       </Card>
 
-      <section className="grid gap-4 xl:grid-cols-2">
-        <Card>
-          <CardHeader
-            title="Contact attempts"
-            icon={<Phone size={15} />}
-            description="Attempts created by the worker, voice tools, or outbound phone runner."
-          />
-          {file.contactAttempts.length === 0 ? (
-            <EmptyState icon={<Phone size={28} />}>No contact attempts have been recorded.</EmptyState>
-          ) : (
-            <Timeline
-              items={[...file.contactAttempts].reverse().map((attempt) => ({
-                id: attempt.id,
-                title: `${humanize(attempt.channel)} · ${humanize(attempt.outcome)}`,
-                badge: <StatusBadge status={attempt.outcome} />,
-                body: attempt.summary,
-                meta: formatDateTime(attempt.attemptedAt),
-                dotTone: attempt.outcome === "reached" ? "success" : attempt.outcome === "failed" || attempt.outcome === "refused" ? "danger" : "warning",
-              }))}
-            />
-          )}
-        </Card>
+      <section className="space-y-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-accent">Workflow activity</p>
+          <h2 className="mt-0.5 text-lg font-semibold text-ink">Follow-up status and call history</h2>
+          <p className="mt-1 max-w-2xl text-sm text-muted">
+            Current workflow state, next scheduled follow-ups, call transcripts, review requests, contact attempts, and audit events.
+          </p>
+        </div>
 
-        <Card>
-          <CardHeader
-            title="Human reviews"
-            icon={<ClipboardCheck size={15} />}
-            description="Policy blocks and review requests that require a firm teammate."
-          />
-          {file.reviews.length === 0 ? (
-            <EmptyState icon={<ClipboardCheck size={28} />}>No human review has been requested for this case.</EmptyState>
-          ) : (
-            <Timeline
-              items={[...file.reviews].reverse().map((review) => ({
-                id: review.id,
-                title: humanize(review.reason),
-                badge: (
-                  <>
-                    <StatusBadge status={review.severity} />
-                    <StatusBadge status={review.status} />
-                  </>
-                ),
-                body: (
-                  <>
-                    {review.summary}
-                    <span className="mt-0.5 block text-xs">Recommended: {review.recommendedAction}</span>
-                    {review.reviewerNote ? <span className="mt-0.5 block text-xs">Note: {review.reviewerNote}</span> : null}
-                  </>
-                ),
-                meta: formatDateTime(review.createdAt),
-                dotTone: review.severity === "high" ? "danger" : "warning",
-              }))}
-            />
-          )}
-        </Card>
-      </section>
-
-      <section className="grid gap-4 xl:grid-cols-2">
-        <Card>
-          <CardHeader
-            title="Phone calls"
-            icon={<PhoneOutgoing size={15} />}
-            description="Outbound phone-call records attached to this case."
-          />
-          {file.phoneCalls.length === 0 ? (
-            <EmptyState icon={<PhoneOutgoing size={28} />}>No outbound phone calls have been placed for this case.</EmptyState>
-          ) : (
-            <Timeline
-              items={[...file.phoneCalls].reverse().map((call) => ({
-                id: call.id,
-                title: `${call.toNumber} · ${humanize(call.connectionStatus)}`,
-                badge: <StatusBadge status={call.connectionStatus} />,
-                body: [
-                  `From ${call.fromNumber}`,
-                  call.twilioCallStatus ? `Twilio: ${humanize(call.twilioCallStatus)}` : null,
-                  call.answeredBy ? `Answered by ${call.answeredBy}` : null,
-                ]
-                  .filter(Boolean)
-                  .join(" · "),
-                meta: `${formatDateTime(call.createdAt)} · ${call.timeZone}`,
-                dotTone: call.connectionStatus === "answered" ? "success" : "neutral",
-              }))}
-            />
-          )}
-        </Card>
-
-        <Card>
-          <CardHeader
-            title="Audit timeline"
-            icon={<History size={15} />}
-            description="Append-only workflow events for this case."
-          />
-          {file.auditEvents.length === 0 ? (
-            <EmptyState icon={<History size={28} />}>No audit events have been recorded for this case.</EmptyState>
-          ) : (
-            <Timeline
-              items={[...file.auditEvents].reverse().map((event) => ({
-                id: event.id,
-                title: event.type,
-                body: event.summary,
-                meta: `${humanize(event.actorType)} · ${formatDateTime(event.occurredAt)}`,
-                dotTone: event.type.includes("fail") ? "danger" : event.type.startsWith("review") ? "warning" : event.type.includes("completed") ? "success" : "accent",
-              }))}
-            />
-          )}
-        </Card>
+        {workflowActivities.length === 0 ? (
+          <Card>
+            <EmptyState icon={<PhoneOutgoing size={28} />}>No workflow activity is available for this case.</EmptyState>
+          </Card>
+        ) : (
+          workflowActivities.map((activity) => (
+            <div className="space-y-4" key={activity.detail.run.id}>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-2">
+                <div>
+                  <h3 className="text-base font-semibold text-ink">{activity.detail.run.title}</h3>
+                  <p className="mt-0.5 text-sm text-muted">{activity.definition.label}</p>
+                </div>
+                <StatusBadge status={activity.detail.run.status} />
+              </div>
+              <WorkflowDetailSections
+                briefing={activity.briefing}
+                callContext={activity.callContext}
+                detail={activity.detail}
+                phoneCalls={activity.phoneCalls}
+              />
+            </div>
+          ))
+        )}
       </section>
     </div>
   );
 }
-

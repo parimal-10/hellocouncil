@@ -4,6 +4,7 @@ type CaseContext = {
   caseId: string;
   matterName: string;
   clientName: string;
+  timeZone?: string | null;
   providerName?: string;
   assignedUserName: string;
 };
@@ -168,6 +169,7 @@ async function getCaseContexts(database: DashboardDatabase, caseIds: string[]) {
         caseId: caseParticipants.caseId,
         role: caseParticipants.role,
         personName: people.name,
+        personTimeZone: people.timeZone,
         organizationName: organizations.name,
       })
       .from(caseParticipants)
@@ -188,6 +190,7 @@ async function getCaseContexts(database: DashboardDatabase, caseIds: string[]) {
           caseId: caseRecord.id,
           matterName: caseRecord.matterName,
           clientName: client?.personName ?? "Unknown client",
+          timeZone: client?.personTimeZone ?? null,
           providerName: provider?.organizationName ?? provider?.personName ?? undefined,
           assignedUserName: ownersById.get(caseRecord.assignedUserId) ?? "Unassigned",
         },

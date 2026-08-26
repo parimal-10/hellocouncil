@@ -41,18 +41,32 @@ export function createTurnDetection(credentials: { apiKey: string; apiSecret: st
 export function buildAgentInstructions(briefing?: WorkflowBriefing) {
   return [
     "You are a legal operations voice agent for HelloCounsel.",
-    "You can look up case status, record updates, mark contact attempts, schedule follow-ups, run a due follow-up now, request human review, and add review notes.",
-    "When asked what is happening, the current status, history, or next steps, call get_workflow_status before answering.",
-    "When asked to follow up now, call now, or do the outreach immediately, call run_follow_up_now.",
-    "When asked to schedule a later follow-up, call schedule_follow_up. For short delays like 'in one minute' or a specific time, pass an exact dueAt ISO-8601 timestamp; otherwise prefer dueInHours.",
+    "Use workflow tools for workflow facts and state changes; do not guess from memory when a tool can verify it.",
+    "For status, history, current state, or next steps, call get_workflow_status before answering.",
+    "For immediate outreach requests such as follow up now, call now, or do the outreach immediately, call run_follow_up_now.",
+    "For later follow-ups, call schedule_follow_up. Use dueInMinutes for short delays like 'in two minutes', dueInHours for hour-based delays, and localTimeExpression for local phrases like 'tomorrow' or 'Tuesday at 3pm'. Do not ask the user for a timezone, UTC time, or ISO timestamp.",
+    "When the user asks you to schedule something, call the tool first, then give one short confirmation using the tool result.",
+    "Do not narrate tool calls, internal reasoning, parameter choices, or steps like 'I need to schedule this' before calling a tool.",
+    "Do not read ISO timestamps, UTC, or GMT aloud; speak dates and times naturally in the case's local terms.",
     "Never say you cannot perform a supported workflow action without first calling the matching tool.",
     "Do not approve, reject, resolve, or assign legal review requests by voice.",
     "Do not give legal advice. If the user asks for legal advice, request human review.",
-    "Keep spoken responses concise and confirm what the tools recorded.",
+    "Keep spoken responses concise. Ask one question at a time. Confirm what the tools recorded.",
     briefing?.agentContext,
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+export function buildInitialReplyInstructions(briefing: WorkflowBriefing) {
+  return [
+    "Greet the user.",
+    `Briefly state the current case status: ${briefing.currentStatus}`,
+    briefing.nextFollowUp
+      ? `Mention that the next follow-up is ${briefing.nextFollowUp.label}; do not read its raw timestamp aloud.`
+      : "Mention that no follow-up is currently scheduled.",
+    "Ask whether they want a status recap, to record an update, to schedule a follow-up, or to run the follow-up now.",
+  ].join(" ");
 }
 
 export type VoiceSessionLookup = VoiceToolEventStore & {
@@ -192,11 +206,13 @@ export function createWorkflowTools(
     }),
     schedule_follow_up: llm.tool({
       name: "schedule_follow_up",
-      description: `Schedule a future follow-up workflow step. ${stepTypeHint} dueAt should be ISO-8601 and is required for short delays such as "in one minute"; otherwise pass dueInHours.`,
+      description: `Schedule a future follow-up workflow step. Call this tool directly when the user asks for a follow-up; do not first explain what you need to do. ${stepTypeHint} Use dueInMinutes for short delays, dueInHours for hour-based delays, or localTimeExpression for the user's local wording such as "tomorrow" or "Tuesday at 3pm". Do not ask for timezone or UTC details.`,
       parameters: z.object({
         stepType: z.string().optional(),
         dueAt: z.string().optional(),
+        dueInMinutes: z.number().optional(),
         dueInHours: z.number().optional(),
+        localTimeExpression: z.string().optional(),
         reason: z.string(),
       }),
       execute: async (payload, { toolCallId }) => execute("schedule_follow_up", payload, toolCallId),
@@ -326,14 +342,7 @@ export function createLiveKitAgent() {
           },
         });
         await session.generateReply({
-          instructions: [
-            "Greet the user.",
-            `Briefly state the current case status: ${briefing.currentStatus}`,
-            briefing.nextFollowUp
-              ? `Mention the next follow-up: ${briefing.nextFollowUp.label} at ${briefing.nextFollowUp.dueAt.toISOString()}.`
-              : "Mention that no follow-up is currently scheduled.",
-            "Ask whether they want a status recap, to record an update, to schedule a follow-up, or to run the follow-up now.",
-          ].join(" "),
+          instructions: buildInitialReplyInstructions(briefing),
         });
       } catch (error) {
         try {

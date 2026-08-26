@@ -83,8 +83,15 @@ export type OutboundCallContext = {
   runSummary: string;
   events: CallHistoryItem[];
   attempts: Array<{ channel: string; outcome: string; summary: string; attemptedAt: Date }>;
-  reviews: Array<{ reason: string; summary: string; status: string; reviewerNote?: string | null }>;
+  reviews: Array<{
+    createdAt?: Date;
+    reason: string;
+    summary: string;
+    status: string;
+    reviewerNote?: string | null;
+  }>;
   priorCalls: Array<{
+    createdAt?: Date;
     connectionStatus: string;
     structuredOutcome: StructuredCallOutcome | null;
     transcript: PhoneTranscriptTurn[];

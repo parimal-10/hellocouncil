@@ -16,7 +16,7 @@ export async function extractCallOutcome(input: {
       content: [
         "Extract structured outcomes from this outbound legal-intake phone call.",
         "Return JSON only with keys: newInformation (string[]), requestedCallback (string|null), status (string), sentiment (positive|neutral|negative|unknown), shouldContinueOutreach (boolean), recommendedFollowUpHours (number|null), urgency (high|normal|low).",
-        "requestedCallback must be the client's own local wording (for example 'Tuesday at 3pm'), never a UTC timestamp.",
+        "requestedCallback must be the client's own local wording (for example 'Tuesday at 3pm' or 'in 1 min'), never a UTC timestamp.",
         "recommendedFollowUpHours is how many hours until the next check-in if the client did not name a specific time. Use a smaller number when the case is urgent.",
       ].join(" "),
     },

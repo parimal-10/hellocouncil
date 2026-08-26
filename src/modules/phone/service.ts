@@ -18,6 +18,12 @@ import type {
 const VOICEMAIL_MESSAGE =
   "Hello, this is HelloCounsel calling about your case. We will try you again later. Goodbye.";
 const OPENING_MESSAGE = "Hello, this is HelloCounsel calling about your case. How are you today?";
+const CLIENT_NO_SPEECH_REPROMPT =
+  "I may not have heard you. This is HelloCounsel calling from your legal team about your case. Is now a good time to talk?";
+const PROVIDER_NO_SPEECH_REPROMPT =
+  "I may not have heard you. This is HelloCounsel calling to follow up on a medical records request. Could I speak with the records desk or get a status update?";
+const FINAL_NO_SPEECH_MESSAGE =
+  "I am not hearing a response, so I will end the call for now. Thank you. Goodbye.";
 
 export async function placeOutboundCall(input: {
   context: OutboundCallContext;
@@ -143,13 +149,25 @@ export async function handleCallTurn(input: {
     });
   }
 
+  if (!speech) {
+    const spoken = noSpeechReply(current);
+    await input.store.appendTranscript(call.id, { speaker: "agent", text: spoken.text, occurredAt: input.now });
+    if (spoken.gather) {
+      return sayAndGather({
+        text: spoken.text,
+        action: followUpAction(input.publicBaseUrl, call.id),
+      });
+    }
+    return sayAndHangup(spoken.text);
+  }
+
   const reply = await completeSpokenReply(
     input.llm,
-    conversationMessages(current, speech ? undefined : "The client was silent. Prompt briefly or end the call."),
+    conversationMessages(current),
   );
   const spoken = stripEndCallMarker(reply) || "Thank you. Goodbye.";
   await input.store.appendTranscript(call.id, { speaker: "agent", text: spoken, occurredAt: input.now });
-  if (hasEndCallMarker(reply) || !speech) return sayAndHangup(spoken);
+  if (hasEndCallMarker(reply)) return sayAndHangup(spoken);
   return sayAndGather({
     text: spoken,
     action: followUpAction(input.publicBaseUrl, call.id),
@@ -227,6 +245,23 @@ async function requireCall(store: PhoneCallStore, callId: string): Promise<Phone
 
 function followUpAction(publicBaseUrl: string, callId: string): string {
   return `${publicBaseUrl.replace(/\/$/, "")}/api/twilio/voice?callId=${callId}`;
+}
+
+function noSpeechReply(call: PhoneCallRecord): { text: string; gather: boolean } {
+  const clientTurns = call.transcript.filter((turn) => turn.speaker === "client").length;
+  const agentTurns = call.transcript.filter((turn) => turn.speaker === "agent").length;
+  if (clientTurns === 0 && agentTurns <= 1) {
+    return {
+      text: isProviderRecordsCall(call) ? PROVIDER_NO_SPEECH_REPROMPT : CLIENT_NO_SPEECH_REPROMPT,
+      gather: true,
+    };
+  }
+  return { text: FINAL_NO_SPEECH_MESSAGE, gather: false };
+}
+
+function isProviderRecordsCall(call: PhoneCallRecord): boolean {
+  const briefing = call.briefing.toLowerCase();
+  return briefing.includes("(records desk)") || briefing.includes("medical-records status");
 }
 
 async function completeSpokenReply(llm: LlmClient, messages: ChatMessage[]): Promise<string> {

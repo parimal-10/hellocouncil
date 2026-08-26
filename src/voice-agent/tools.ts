@@ -1,4 +1,6 @@
 import { routeWorkflowAction, type WorkflowActionResult } from "@/modules/workflows/action-router";
+import { loadOutboundCallContext } from "@/modules/phone/store";
+import { resolveClientTimeExpression } from "@/modules/time/timezone";
 import { loadWorkflowBriefing } from "@/modules/workflows/briefing";
 import { getWorkflowDefinition, workflowDefinitions } from "@/modules/workflows/definitions";
 import { WorkflowEngine } from "@/modules/workflows/engine";
@@ -41,9 +43,16 @@ export type SignalRunImpl = (options: {
   args: unknown[];
 }) => Promise<void>;
 
+export type LoadWorkflowTimeZoneImpl = (workflowRunId: string) => Promise<string>;
+
 async function defaultSignalRun(options: { workflowRunId: string; signal: string; args: unknown[] }) {
   const { signalRun } = await import("@/temporal/start-run");
   await signalRun(options as Parameters<typeof signalRun>[0]);
+}
+
+async function defaultLoadWorkflowTimeZone(workflowRunId: string) {
+  const context = await loadOutboundCallContext(workflowRunId);
+  return context.timeZone;
 }
 
 async function requestImmediateFollowUp(input: {
@@ -103,6 +112,7 @@ export async function executeVoiceWorkflowTool(input: {
   toolCallId?: string;
   loadBriefing?: typeof loadWorkflowBriefing;
   signalRunImpl?: SignalRunImpl;
+  loadWorkflowTimeZone?: LoadWorkflowTimeZoneImpl;
   now?: Date;
 }): Promise<WorkflowActionResult> {
   const eventContext = voiceEventContext(input);
@@ -182,7 +192,13 @@ export async function executeVoiceWorkflowTool(input: {
         );
       }
       const resolvedAction = action.type === "schedule_follow_up"
-        ? resolveScheduleFollowUp(action, definition, input.payload, input.now ?? new Date())
+        ? await resolveScheduleFollowUp({
+            action,
+            definition,
+            payload: input.payload,
+            now: input.now ?? new Date(),
+            loadWorkflowTimeZone: input.loadWorkflowTimeZone ?? defaultLoadWorkflowTimeZone,
+          })
         : action;
       if (
         resolvedAction.type === "schedule_follow_up"
@@ -285,8 +301,14 @@ function toWorkflowAction(workflowRunId: string, toolName: VoiceToolName, payloa
     if (body.dueAt !== undefined && body.dueAt !== null && body.dueAt !== "") {
       dateField(body, "dueAt");
     }
+    if (body.dueInMinutes !== undefined) {
+      numberField(body, "dueInMinutes");
+    }
     if (body.dueInHours !== undefined) {
       numberField(body, "dueInHours");
+    }
+    if (body.localTimeExpression !== undefined) {
+      optionalString(body, "localTimeExpression");
     }
     return {
       type: "schedule_follow_up",
@@ -338,27 +360,54 @@ function numberField(payload: Record<string, unknown>, key: string) {
   return parsed;
 }
 
-function resolveScheduleFollowUp(
-  action: Extract<WorkflowAction, { type: "schedule_follow_up" }>,
-  definition: WorkflowDefinition,
-  payload: unknown,
-  now: Date,
-): Extract<WorkflowAction, { type: "schedule_follow_up" }> {
-  const body = objectPayload(payload);
-  const template = action.stepType
-    ? definition.stepTemplates.find((step) => step.type === action.stepType)
-    : definition.stepTemplates[0];
+async function resolveScheduleFollowUp(input: {
+  action: Extract<WorkflowAction, { type: "schedule_follow_up" }>;
+  definition: WorkflowDefinition;
+  payload: unknown;
+  now: Date;
+  loadWorkflowTimeZone: LoadWorkflowTimeZoneImpl;
+}): Promise<Extract<WorkflowAction, { type: "schedule_follow_up" }>> {
+  const body = objectPayload(input.payload);
+  const template = input.action.stepType
+    ? input.definition.stepTemplates.find((step) => step.type === input.action.stepType)
+    : input.definition.stepTemplates[0];
   if (!template) {
     throw new VoiceToolPublicError(
-      `Step type ${action.stepType} is not defined for workflow ${definition.id}. Valid step types: ${definition.stepTemplates.map((step) => step.type).join(", ")}.`,
+      `Step type ${input.action.stepType} is not defined for workflow ${input.definition.id}. Valid step types: ${input.definition.stepTemplates.map((step) => step.type).join(", ")}.`,
     );
   }
-  const dueAt = action.dueAt.getTime() !== 0
-    ? action.dueAt
-    : body.dueInHours !== undefined
-      ? new Date(now.getTime() + numberField(body, "dueInHours") * 60 * 60 * 1000)
-      : new Date(now.getTime() + template.defaultDueInHours * 60 * 60 * 1000);
-  return { ...action, stepType: template.type, dueAt };
+  const dueAt = await resolveScheduleDueAt({
+    action: input.action,
+    payload: body,
+    now: input.now,
+    defaultDueInHours: template.defaultDueInHours,
+    loadWorkflowTimeZone: input.loadWorkflowTimeZone,
+  });
+  return { ...input.action, stepType: template.type, dueAt };
+}
+
+async function resolveScheduleDueAt(input: {
+  action: Extract<WorkflowAction, { type: "schedule_follow_up" }>;
+  payload: Record<string, unknown>;
+  now: Date;
+  defaultDueInHours: number;
+  loadWorkflowTimeZone: LoadWorkflowTimeZoneImpl;
+}) {
+  if (input.action.dueAt.getTime() !== 0) return input.action.dueAt;
+  if (input.payload.dueInMinutes !== undefined) {
+    return new Date(input.now.getTime() + numberField(input.payload, "dueInMinutes") * 60 * 1000);
+  }
+  if (input.payload.dueInHours !== undefined) {
+    return new Date(input.now.getTime() + numberField(input.payload, "dueInHours") * 60 * 60 * 1000);
+  }
+  const localTimeExpression = optionalString(input.payload, "localTimeExpression");
+  if (localTimeExpression) {
+    const timeZone = await input.loadWorkflowTimeZone(input.action.workflowRunId);
+    const resolved = resolveClientTimeExpression(localTimeExpression, timeZone, input.now);
+    if (!resolved.ok) throw new VoiceToolPublicError(resolved.error);
+    return resolved.utc;
+  }
+  return new Date(input.now.getTime() + input.defaultDueInHours * 60 * 60 * 1000);
 }
 
 function reviewReasonField(payload: Record<string, unknown>, key: string): ReviewBlockReason {

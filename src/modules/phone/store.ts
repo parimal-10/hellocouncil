@@ -12,7 +12,7 @@ import {
   workflowRuns,
   workflowSteps,
 } from "@/db/schema";
-import { assembleOutboundCallContext } from "./context";
+import { assembleOutboundCallContext, CALL_CONTEXT_LIMITS } from "./context";
 import type { OutboundCallContext, PhoneCallRecord, PhoneCallStore, PhoneTranscriptTurn, StructuredCallOutcome } from "./types";
 
 export class DrizzlePhoneCallStore implements PhoneCallStore {
@@ -143,22 +143,26 @@ export async function loadOutboundCallContext(
       .select()
       .from(workflowEvents)
       .where(eq(workflowEvents.workflowRunId, workflowRunId))
-      .orderBy(workflowEvents.occurredAt),
+      .orderBy(desc(workflowEvents.occurredAt))
+      .limit(CALL_CONTEXT_LIMITS.events),
     client
       .select()
       .from(contactAttempts)
       .where(eq(contactAttempts.workflowRunId, workflowRunId))
-      .orderBy(contactAttempts.attemptedAt),
+      .orderBy(desc(contactAttempts.attemptedAt))
+      .limit(CALL_CONTEXT_LIMITS.attempts),
     client
       .select()
       .from(humanReviewRequests)
       .where(eq(humanReviewRequests.workflowRunId, workflowRunId))
-      .orderBy(desc(humanReviewRequests.createdAt)),
+      .orderBy(desc(humanReviewRequests.createdAt))
+      .limit(CALL_CONTEXT_LIMITS.reviews),
     client
       .select()
       .from(phoneCalls)
       .where(and(eq(phoneCalls.workflowRunId, workflowRunId)))
-      .orderBy(desc(phoneCalls.createdAt)),
+      .orderBy(desc(phoneCalls.createdAt))
+      .limit(CALL_CONTEXT_LIMITS.priorCalls),
   ]);
 
   return assembleOutboundCallContext({

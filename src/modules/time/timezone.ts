@@ -34,6 +34,21 @@ const WEEKDAYS: Record<string, number> = {
   sunday: 7,
 };
 
+const SMALL_NUMBER_WORDS: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+};
+
 export function isValidIanaTimeZone(timeZone: string): boolean {
   if (!timeZone || timeZone !== timeZone.trim()) return false;
   if (/^[+-]\d{2}:\d{2}$/.test(timeZone) || /^GMT[+-]/i.test(timeZone)) return false;
@@ -134,6 +149,9 @@ function parseLocalExpression(expression: string, nowLocal: DateTime, timeZone: 
   const isoLocal = parseZoneLessIso(expression, timeZone);
   if (isoLocal) return isoLocal;
 
+  const relative = parseRelativeDelay(expression, nowLocal);
+  if (relative) return relative;
+
   const weekdayMatch = expression.match(
     /^(?:next\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow)(?:\s+at\s+(.+))?$/i,
   );
@@ -151,6 +169,25 @@ function parseLocalExpression(expression: string, nowLocal: DateTime, timeZone: 
   }
 
   return null;
+}
+
+function parseRelativeDelay(expression: string, nowLocal: DateTime): DateTime | null {
+  const match = expression.match(
+    /^(?:call\s+(?:me|us)\s+)?(?:back\s+)?in\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*(minutes?|mins?|hours?|hrs?)$/i,
+  );
+  if (!match) return null;
+  const amount = parseRelativeAmount(match[1]);
+  if (!amount || amount < 1) return null;
+  const unit = match[2].toLowerCase();
+  if (unit.startsWith("hour") || unit.startsWith("hr")) {
+    return nowLocal.plus({ hours: amount });
+  }
+  return nowLocal.plus({ minutes: amount });
+}
+
+function parseRelativeAmount(raw: string): number | null {
+  if (/^\d+$/.test(raw)) return Number(raw);
+  return SMALL_NUMBER_WORDS[raw.toLowerCase()] ?? null;
 }
 
 function parseZoneLessIso(expression: string, timeZone: string): DateTime | null {

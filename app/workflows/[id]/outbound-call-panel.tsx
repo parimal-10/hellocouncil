@@ -1,3 +1,4 @@
+import React from "react";
 import { Info, Phone, PhoneOutgoing } from "lucide-react";
 import { placeOutboundCallAction } from "../../actions/phone";
 import { resolveOutboundCallee } from "@/modules/phone/callee";

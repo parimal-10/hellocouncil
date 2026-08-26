@@ -266,6 +266,80 @@ describe("voice agent tools", () => {
     ]);
   });
 
+  it("resolves schedule_follow_up dueInMinutes relative to now", async () => {
+    const store = storeWithRun();
+    const now = new Date("2026-08-24T10:00:00.000Z");
+    const signals: Array<{ workflowRunId: string; signal: string; args: unknown[] }> = [];
+
+    await executeVoiceWorkflowTool({
+      workflowRunId: "run-1",
+      toolName: "schedule_follow_up",
+      payload: {
+        stepType: "provider_follow_up",
+        dueInMinutes: 2,
+        reason: "Call the provider back in 2 minutes.",
+      },
+      store,
+      signalRunImpl: async (options) => {
+        signals.push(options);
+      },
+      now,
+    });
+
+    expect(store.steps.get("step-1")).toMatchObject({
+      workflowRunId: "run-1",
+      stepType: "provider_follow_up",
+      dueAt: new Date("2026-08-24T10:02:00.000Z"),
+      payload: { reason: "Call the provider back in 2 minutes." },
+    });
+    expect(signals[0]?.args).toEqual([
+      {
+        stepType: "provider_follow_up",
+        dueAt: "2026-08-24T10:02:00.000Z",
+        reason: "Call the provider back in 2 minutes.",
+      },
+    ]);
+  });
+
+  it("resolves schedule_follow_up local time expressions with the workflow timezone", async () => {
+    const store = storeWithRun();
+    const now = new Date("2026-08-24T17:00:00.000Z");
+    const signals: Array<{ workflowRunId: string; signal: string; args: unknown[] }> = [];
+
+    await executeVoiceWorkflowTool({
+      workflowRunId: "run-1",
+      toolName: "schedule_follow_up",
+      payload: {
+        stepType: "provider_follow_up",
+        localTimeExpression: "tomorrow",
+        reason: "Provider asked for a callback tomorrow.",
+      },
+      store,
+      signalRunImpl: async (options) => {
+        signals.push(options);
+      },
+      loadWorkflowTimeZone: async (workflowRunId) => {
+        expect(workflowRunId).toBe("run-1");
+        return "America/Chicago";
+      },
+      now,
+    });
+
+    expect(store.steps.get("step-1")).toMatchObject({
+      workflowRunId: "run-1",
+      stepType: "provider_follow_up",
+      dueAt: new Date("2026-08-25T14:00:00.000Z"),
+      payload: { reason: "Provider asked for a callback tomorrow." },
+    });
+    expect(signals[0]?.args).toEqual([
+      {
+        stepType: "provider_follow_up",
+        dueAt: "2026-08-25T14:00:00.000Z",
+        reason: "Provider asked for a callback tomorrow.",
+      },
+    ]);
+  });
+
   it("returns the spoken case briefing for get_workflow_status", async () => {
     const store = storeWithRun();
 

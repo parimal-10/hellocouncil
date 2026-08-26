@@ -76,6 +76,7 @@ describe("workflow briefing", () => {
         clientName: "Priya Shah",
         providerName: "Harbor Orthopedics",
         assignedUserName: "Maya Singh",
+        timeZone: "America/New_York",
       },
       steps: [
         {
@@ -116,7 +117,9 @@ describe("workflow briefing", () => {
       dueAt,
       status: "due",
     });
-    expect(briefing.spokenSummary).toContain(dueAt.toISOString());
+    expect(briefing.spokenSummary).toContain("Tuesday, August 25, 2026");
+    expect(briefing.spokenSummary).not.toContain(dueAt.toISOString());
     expect(briefing.nextSteps[0]).toContain("scheduled for");
+    expect(briefing.nextSteps[0]).not.toContain(dueAt.toISOString());
   });
 });

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { inference } from "@livekit/agents";
 import {
   buildAgentInstructions,
+  buildInitialReplyInstructions,
   createAgentModelConfig,
   createTurnDetection,
   createVoiceAgentServerOptions,
@@ -75,6 +76,8 @@ describe("voice agent configuration", () => {
     );
     expect(buildAgentInstructions()).toContain("run_follow_up_now");
     expect(buildAgentInstructions()).toContain("get_workflow_status");
+    expect(buildAgentInstructions()).toContain("Do not read ISO timestamps, UTC, or GMT aloud");
+    expect(buildAgentInstructions()).toContain("Do not narrate tool calls");
     expect(
       buildAgentInstructions({
         currentStatus: "Lee v. Metro Transit is active.",
@@ -88,6 +91,55 @@ describe("voice agent configuration", () => {
         agentContext: "Case: Lee v. Metro Transit. Valid follow-up step types: provider_follow_up.",
       }),
     ).toContain("Case: Lee v. Metro Transit.");
+  });
+
+  it("tells the agent to schedule short follow-ups silently before confirming", () => {
+    const instructions = buildAgentInstructions();
+    const workflowTools = createWorkflowTools(
+      {
+        workflowRunId: "run-1",
+        voiceSessionId: "voice-1",
+        participantIdentity: "browser-1",
+        voiceEventStore: {
+          async appendSessionEvent() {},
+          async claimToolCall() {
+            return true;
+          },
+          async getToolCallResult() {
+            return null;
+          },
+        },
+      },
+      async () => ({ ok: true, message: "Follow-up scheduled." }),
+    );
+
+    expect(instructions).toContain("When the user asks you to schedule something, call the tool first");
+    expect(instructions).toContain("then give one short confirmation");
+    expect(workflowTools.schedule_follow_up.description).toContain("Call this tool directly");
+    expect(workflowTools.schedule_follow_up.description).toContain("do not first explain");
+  });
+
+  it("builds a concise initial reply prompt without raw follow-up timestamps", () => {
+    const instructions = buildInitialReplyInstructions({
+      currentStatus: "Lee v. Metro Transit is active.",
+      whatHappened: [],
+      nextSteps: [],
+      nextFollowUp: {
+        label: "Follow up with provider",
+        dueAt: new Date("2026-08-25T06:00:00.000Z"),
+        status: "due",
+      },
+      openReviews: [],
+      validStepTypes: ["provider_follow_up"],
+      canRunFollowUpNow: true,
+      spokenSummary: "Lee v. Metro Transit is active.",
+      agentContext: "Case: Lee v. Metro Transit.",
+    });
+
+    expect(instructions).toContain("Greet the user");
+    expect(instructions).toContain("Follow up with provider");
+    expect(instructions).not.toContain("2026-08-25T06:00:00.000Z");
+    expect(instructions).not.toContain("UTC");
   });
 
   it("resolves the exact persisted launch and workflow definition from dispatch metadata", async () => {

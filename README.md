@@ -34,6 +34,27 @@ npm run dev
 
 Open `http://localhost:3000`.
 
+### Public webhook URL for local Twilio calls
+
+Real Twilio calls need to reach your local Next.js webhooks, so expose local port
+`3000` through a public tunnel and set that URL in `.env`:
+
+```powershell
+ngrok http 3000
+```
+
+Copy the generated HTTPS forwarding URL, for example
+`https://abc123.ngrok-free.app`, into:
+
+```text
+PUBLIC_BASE_URL=https://abc123.ngrok-free.app
+```
+
+Any equivalent tunnel provider is fine. The important part is that
+`PUBLIC_BASE_URL` points to the public HTTPS URL that forwards to your local
+`http://localhost:3000` app. Restart `npm run dev` and `npm run worker` after
+changing `.env`.
+
 ## Worker
 
 Run the worker in a separate terminal:

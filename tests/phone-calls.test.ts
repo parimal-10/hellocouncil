@@ -188,6 +188,78 @@ describe("call voice and turns", () => {
     expect(saved?.transcript.map((turn) => turn.speaker)).toEqual(["client", "agent"]);
     expect(saved?.transcript[0]?.text).toContain("records are already");
   });
+
+  it("reprompts once when Twilio captures no speech after the opening prompt", async () => {
+    const store = new MemoryPhoneCallStore();
+    const call = await seedCall(store, {
+      connectionStatus: "answered",
+      transcript: [
+        {
+          speaker: "agent",
+          text: "Hello, this is HelloCounsel calling about your case. How are you today?",
+          occurredAt: chicagoMondayAfternoon,
+        },
+      ],
+    });
+    const twiml = await handleCallTurn({
+      callId: call.id,
+      speech: "",
+      store,
+      llm: {
+        async complete() {
+          throw new Error("LLM should not be called for the first no-speech reprompt");
+        },
+      },
+      now: chicagoMondayAfternoon,
+      publicBaseUrl: "https://example.test",
+    });
+
+    expect(twiml).toContain("<Gather");
+    expect(twiml).not.toContain("<Hangup");
+    expect(store.calls[0]?.transcript.map((turn) => turn.speaker)).toEqual(["agent", "agent"]);
+    expect(store.calls[0]?.transcript[1]?.text).toMatch(/HelloCounsel calling/i);
+  });
+
+  it("uses a records-desk reprompt for silent provider follow-up calls", async () => {
+    const store = new MemoryPhoneCallStore();
+    const result = await placeOutboundCall({
+      context: context({
+        definitionId: "medical-records-follow-up",
+        providerPhone: "+12125550199",
+      }),
+      now: chicagoMondayAfternoon,
+      store,
+      twilio: twilioStub(),
+      config: { fromNumber: "+15551234567", publicBaseUrl: "https://example.test" },
+      stepType: "provider_follow_up",
+    });
+    await store.updateCall(result.call.id, {
+      connectionStatus: "answered",
+      transcript: [
+        {
+          speaker: "agent",
+          text: "Hello, this is HelloCounsel calling about your case. How are you today?",
+          occurredAt: chicagoMondayAfternoon,
+        },
+      ],
+    });
+    const twiml = await handleCallTurn({
+      callId: result.call.id,
+      speech: undefined,
+      store,
+      llm: {
+        async complete() {
+          throw new Error("LLM should not be called for the first no-speech reprompt");
+        },
+      },
+      now: chicagoMondayAfternoon,
+      publicBaseUrl: "https://example.test",
+    });
+
+    expect(twiml).toContain("<Gather");
+    expect(store.calls[0]?.transcript[1]?.text).toMatch(/medical records request/i);
+    expect(store.calls[0]?.transcript[1]?.text).toMatch(/records desk/i);
+  });
 });
 
 describe("status callbacks and outcomes", () => {
@@ -245,6 +317,40 @@ describe("status callbacks and outcomes", () => {
     expect(store.runSummaries.get("run-1")).toContain("callback requested");
     expect(store.events.some((event) => event.type === "phone_call.completed")).toBe(true);
     expect(store.contactAttempts[0]?.outcome).toBe("reached");
+  });
+
+  it("extracts a short relative callback request instead of falling back to the workflow default", async () => {
+    const store = new MemoryPhoneCallStore();
+    const call = await seedCall(store, {
+      connectionStatus: "answered",
+      transcript: [
+        { speaker: "agent", text: "When should we call you back?", occurredAt: chicagoMondayAfternoon },
+        { speaker: "client", text: "Can you call me in 1 min?", occurredAt: chicagoMondayAfternoon },
+        { speaker: "agent", text: "I will call you back in one minute. [[END_CALL]]", occurredAt: chicagoMondayAfternoon },
+      ],
+    });
+    const llm = scriptedLlm([
+      JSON.stringify({
+        newInformation: ["Provider asked for a callback in 1 min."],
+        requestedCallback: "in 1 min",
+        status: "callback requested",
+        sentiment: "neutral",
+        shouldContinueOutreach: true,
+      }),
+    ]);
+
+    await handleCallStatus({
+      callId: call.id,
+      callStatus: "completed",
+      answeredBy: "human",
+      store,
+      llm,
+      now: chicagoMondayAfternoon,
+    });
+
+    const outcome = store.calls[0]?.structuredOutcome;
+    expect(outcome?.requestedCallbackAt).toBe("2026-08-24T17:01:00.000Z");
+    expect(outcome?.requestedCallbackLocal).toContain("12:01 PM");
   });
 });
 

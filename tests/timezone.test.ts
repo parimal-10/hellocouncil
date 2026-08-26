@@ -137,6 +137,18 @@ describe("client time expressions", () => {
     expect(resolved.utc.toISOString()).toBe("2026-08-25T20:00:00.000Z");
   });
 
+  it("resolves short relative callback phrases from now", () => {
+    const numeric = resolveClientTimeExpression("in 1 min", chicago, mondayNoonUtc);
+    const words = resolveClientTimeExpression("in two minutes", chicago, mondayNoonUtc);
+
+    expect(numeric.ok).toBe(true);
+    expect(words.ok).toBe(true);
+    if (!numeric.ok || !words.ok) return;
+    expect(numeric.utc.toISOString()).toBe("2026-08-24T17:01:00.000Z");
+    expect(words.utc.toISOString()).toBe("2026-08-24T17:02:00.000Z");
+    expect(numeric.localLabel).toContain("12:01 PM");
+  });
+
   it("rejects expressions it cannot resolve instead of guessing UTC", () => {
     const resolved = resolveClientTimeExpression("sometime next week", chicago, mondayNoonUtc);
     expect(resolved.ok).toBe(false);
