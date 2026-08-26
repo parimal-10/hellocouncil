@@ -461,6 +461,116 @@ describe("workflowRunWorkflow", () => {
     expect(executed).toEqual(["step-from-follow-up"]);
   }, 30000);
 
+  it("honors a scheduleFollowUp that lands mid-load while runFollowUpNow was already pending", async () => {
+    const log: string[] = [];
+    let loads = 0;
+    let handleRef: import("@temporalio/client").WorkflowHandle<typeof workflowRunWorkflow> | undefined;
+    const executed: string[] = [];
+    let releaseSecondLoad: () => void = () => {};
+    const secondLoadGate = new Promise<void>((resolve) => {
+      releaseSecondLoad = resolve;
+    });
+    const fake = {
+      async loadRunState(_input: { workflowRunId: string }) {
+        log.push("load");
+        loads += 1;
+        if (loads === 2) {
+          // Hold the second load open: by then runFollowUpNow is part of the
+          // pre-load snapshot, and the test lands scheduleFollowUp while this
+          // load is still in flight.
+          await secondLoadGate;
+          // The persisted effect of the scheduled follow-up is not yet
+          // visible to this stale snapshot.
+          return {
+            runStatus: "active",
+            awaitingCallCompletion: false,
+            openReviewId: null,
+            dueStepId: null,
+            nextDueAt: null,
+          };
+        }
+        if (!executed.length && loads >= 3) {
+          return {
+            runStatus: "active",
+            awaitingCallCompletion: false,
+            openReviewId: null,
+            // From the third load onward the persisted effect of the
+            // injected follow-up request is visible.
+            dueStepId: "step-from-schedule",
+            nextDueAt: null,
+          };
+        }
+        if (executed.length) {
+          return {
+            runStatus: "completed",
+            awaitingCallCompletion: false,
+            openReviewId: null,
+            dueStepId: null,
+            nextDueAt: null,
+          };
+        }
+        return {
+          runStatus: "active",
+          awaitingCallCompletion: false,
+          openReviewId: null,
+          dueStepId: null,
+          nextDueAt: null,
+        };
+      },
+      async executeDueStep(input: { stepId: string }) {
+        log.push(`execute:${input.stepId}`);
+        executed.push(input.stepId);
+        return { kind: "placed" };
+      },
+      async applyCallOutcome(_input: { callId: string }) {
+        throw new Error("not expected");
+      },
+      async recordTemporalWorkflowId(_input: { workflowRunId: string; temporalWorkflowId: string }) {},
+    } as unknown as typeof activities;
+
+    const client = env.client.workflow;
+    const handle = await client.start(workflowRunWorkflow, {
+      args: [{ workflowRunId: "run-mid-load-schedule" }],
+      workflowId: "workflow-run-test-10",
+      taskQueue: TASK_QUEUE,
+    });
+    handleRef = handle;
+
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      taskQueue: TASK_QUEUE,
+      workflowsPath: workflowsPath(),
+      activities: fake,
+    });
+    const workerPromise = worker.run();
+
+    for (let i = 0; i < 200 && log.length < 1; i += 1) {
+      await env.sleep("10ms"); // wait until the first load has started so the signal cannot precede its snapshot
+    }
+    await handle.signal(workflowSignals.runFollowUpNow);
+    for (let i = 0; i < 200 && log.filter((entry) => entry === "load").length < 2; i += 1) {
+      await env.sleep("10ms"); // wait until the run-now wake is reloading and blocked in the gate
+    }
+    // Land the schedule request while the gated load is in flight; the
+    // pre-load snapshot for this iteration already contained runNowPending.
+    await handle.signal(workflowSignals.scheduleFollowUp, {
+      stepType: "reminder",
+      dueAt: new Date(Date.now() + 60_000).toISOString(),
+      reason: "mid-load while run-now pending",
+    });
+    releaseSecondLoad();
+
+    // A pre-fix build wipes the mid-load schedulePending flag together with
+    // the snapshot-captured runNowPending and idles forever; the fixed build
+    // must reload, observe the due step, execute it, and complete.
+    await handle.result();
+    worker.shutdown();
+    await workerPromise;
+
+    expect(log[0]).toBe("load");
+    expect(executed).toEqual(["step-from-schedule"]);
+  }, 30000);
+
   it("does not hot-loop after consuming a scheduleFollowUp signal", async () => {
     const log: string[] = [];
     const fake = {

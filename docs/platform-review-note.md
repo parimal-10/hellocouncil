@@ -1,5 +1,7 @@
 # Long-Running Agents Platform — Reviewer Note
 
+> **Superseded (2026-08-26):** the runner architecture described below (pg-boss + reconcile loop) was migrated to self-hosted Temporal. See `docs/superpowers/specs/2026-08-26-temporal-runner-migration-design.md` for the current design. The rest of this document is preserved as-is for historical context.
+
 A working slice of a reusable platform for long-running legal-agent workflows: durable workflow state, scheduled follow-ups that place **real Twilio calls**, human-in-the-loop review, an append-only audit trail, and both a browser voice runtime (LiveKit) and an autonomous phone agent — all driven by one workflow engine.
 
 ---

@@ -51,6 +51,8 @@ export async function workflowRunWorkflow(input: WorkflowRunInput): Promise<void
     completedCallIds.length > 0 || reviewPending || runNowPending || schedulePending;
 
   while (true) {
+    const runNowPendingBeforeLoad = runNowPending;
+    const schedulePendingBeforeLoad = schedulePending;
     const pendingBeforeLoad =
       completedCallIds.length > 0 || reviewPending || runNowPending || schedulePending;
     const state = await loadRunState({ workflowRunId });
@@ -63,17 +65,26 @@ export async function workflowRunWorkflow(input: WorkflowRunInput): Promise<void
     // above is in flight arrived after the snapshot. Its app-side effect is
     // already persisted (signals are sent after persist), but this iteration
     // captured pre-signal state; reload once so the wake is not cleared below.
+    // This holds even when another signal was already pending at snapshot
+    // time: each flag is checked against its own pre-load value, so an
+    // arrival during the load always triggers the reload instead of being
+    // silently dropped by the clears further down.
     if (
-      !pendingBeforeLoad
-      && (completedCallIds.length > 0 || reviewPending || runNowPending || schedulePending)
+      (!pendingBeforeLoad
+        && (completedCallIds.length > 0 || reviewPending || runNowPending || schedulePending))
+      || (!runNowPendingBeforeLoad && runNowPending)
+      || (!schedulePendingBeforeLoad && schedulePending)
     ) {
       continue;
     }
 
     // Consumed notifications must not keep waking the loop: runNow/schedule
-    // exist only to trigger the reload at the top of the iteration and are
-    // cleared once the fresh state is in hand. A review resolution without an
-    // open review is already reflected in that state. Call-completion signals
+    // exist only to trigger the reload at the top of the iteration. Only the
+    // flags captured by the pre-load snapshot are cleared here — their
+    // persisted effect is visible in this fresh state — while a flag that
+    // landed mid-load was preserved above and survives to drive one more
+    // reload. A review resolution without an open review is already reflected
+    // in that state. Call-completion signals
     // are at-least-once (Twilio webhooks retry) and can arrive outside the
     // awaiting window entirely; each queued entry is resolved through the
     // idempotent orchestration claim ({applied:false} unless applicable) and
@@ -90,8 +101,8 @@ export async function workflowRunWorkflow(input: WorkflowRunInput): Promise<void
       continue;
     }
     if (!state.openReviewId) reviewPending = false;
-    runNowPending = false;
-    schedulePending = false;
+    if (runNowPendingBeforeLoad) runNowPending = false;
+    if (schedulePendingBeforeLoad) schedulePending = false;
 
     if (state.awaitingCallCompletion) {
       await condition(() => completedCallIds.length > 0);
